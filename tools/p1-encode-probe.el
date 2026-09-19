@@ -42,6 +42,26 @@ instead of overwriting the artefact that cost an hour of GPU time.")
       (expand-file-name "p1-results.org" nso-p1--build)))
 (defvar nso-p1--log (expand-file-name "p1-progress.log" nso-p1--build))
 (defvar nso-p1--mid-layer 13 "Zero-based index of the mid-depth capture point.")
+
+(defvar nso-p1--slow-block (and (getenv "NSO_P1_SLOW_BLOCK") t)
+  "Non-nil to use the original one-round-trip-per-position block.
+Measured on this hardware over a whole 112-example run: 39.7s per example with
+it, 16.3s without, at a mean of 8.7 tokens.")
+
+(defvar nso-p1--block-fn
+  (if nso-p1--slow-block #'nl-llm-wgpu-block #'nso-encode-block)
+  "Which block driver to run.
+`nso-encode-block' batches each role's matmul over all positions instead of
+issuing one round trip per position; `test/encode-equivalence-test.el' pins it
+bit-identical to the original.  NSO_P1_SLOW_BLOCK selects the original, which
+is how the two are compared on a whole run rather than on one layer.")
+
+(defvar nso-p1--checkpoint-every
+  (string-to-number (or (getenv "NSO_P1_CHECKPOINT") "20"))
+  "Write the states file every this many newly encoded examples.
+The first long run wrote only at the end, so killing it at 40 of 112 threw
+away 40 examples that had already been paid for.  Checkpointing makes a long
+encode resumable: the next run reads what landed and encodes the rest.")
 (defvar nso-p1--progress-every
   (string-to-number (or (getenv "NSO_P1_PROGRESS") "10"))
   "Log progress every this many examples.
@@ -101,12 +121,47 @@ only record of how far it got.")
 
 ;;; --- stage: encode -------------------------------------------------------
 
+(defun nso-p1--cached-rows ()
+  "Rows already encoded in the states file, or nil.
+The encoder costs 39.7s per example, so growing the dataset must not mean
+re-spending the hour the existing rows already cost.  A cached file is reused
+only when its shape matches the current configuration; a mismatch means the
+rows were produced by something else and mixing them would compare two
+encoders while calling it one.  NSO_P1_FORCE_ENCODE ignores the cache."
+  (when (and (file-readable-p nso-p1--states)
+             (not (getenv "NSO_P1_FORCE_ENCODE")))
+    (let ((saved (with-temp-buffer
+                   (insert-file-contents nso-p1--states)
+                   (read (buffer-string)))))
+      (if (and (equal (plist-get saved :mid-layer) nso-p1--mid-layer)
+               (integerp (plist-get saved :dim)))
+          (plist-get saved :rows)
+        (nso-p1--say "cache ignored: shape does not match this configuration")
+        nil))))
+
+(defun nso-p1--merge-rows (cached new)
+  "Cached and newly encoded rows, ordered by pair so the artefact is stable."
+  (sort (append cached (copy-sequence new))
+        (lambda (a b)
+          (if (= (plist-get a :pair) (plist-get b :pair))
+              (> (plist-get a :label) (plist-get b :label))
+            (< (plist-get a :pair) (plist-get b :pair))))))
+
+(defun nso-p1--write-states (rows dim)
+  "Write ROWS to the states file."
+  (with-temp-file nso-p1--states
+    (let ((print-level nil) (print-length nil))
+      (prin1 (list :dim dim :mid-layer nso-p1--mid-layer :rows rows)
+             (current-buffer)))))
+
 (defun nso-p1-encode (tokenised)
-  "Encode TOKENISED with all layers resident; write states to disk."
+  "Encode TOKENISED with all layers resident; write states to disk.
+Examples already present in the states file are reused rather than re-encoded."
   (require 'nl-llm-weights)
   (require 'nl-llm-weights-forward)
   (unless (require 'nl-llm-weights-gpu nil t)
     (error "p1: nelisp-gpu is not loadable"))
+  (require 'nso-encode)
   (nelisp-gpu-server-start)
   (unless (nelisp-gpu-server-up-p) (error "p1: the GPU server would not start"))
   (unwind-protect
@@ -116,8 +171,23 @@ only record of how far it got.")
              (dim (plist-get cfg :dim))
              (nlayers (plist-get cfg :layers))
              (t0 (float-time))
+             (cached (nso-p1--cached-rows))
+             (have (let ((h (make-hash-table :test 'equal)))
+                     (dolist (r cached) (puthash (plist-get r :text) r h))
+                     h))
+             (todo (let (out)
+                     (dolist (p tokenised)
+                       (unless (gethash (plist-get (car p) :text) have)
+                         (push p out)))
+                     (nreverse out)))
              (layers nil))
-        (dotimes (ly nlayers)
+        (nso-p1--say "cache: %d rows reused, %d to encode (%.0f min)"
+                     (length cached) (length todo)
+                     (/ (* (if nso-p1--slow-block 39.7 16.3) (length todo))
+                        60.0))
+        (when (null todo)
+          (nso-p1--say "nothing to encode; reusing the cache whole"))
+        (dotimes (ly (if todo nlayers 0))
           (push (nl-llm-wgpu-load-layer wts ly) layers)
           ;; Logged in sevenths rather than only at the end: the upload is two
           ;; minutes of the run and a death inside it would otherwise leave no
@@ -128,8 +198,8 @@ only record of how far it got.")
         (setq layers (nreverse layers))
         (nso-p1--say "resident load: %.0fs for %d layers" (- (float-time) t0) nlayers)
         (unwind-protect
-            (let ((rows nil) (i 0) (n (length tokenised)) (t1 (float-time)))
-              (dolist (pair tokenised)
+            (let ((rows nil) (i 0) (n (length todo)) (t1 (float-time)))
+              (dolist (pair todo)
                 (let* ((e (car pair))
                        (ids (cdr pair))
                        (seq (length ids))
@@ -142,7 +212,7 @@ only record of how far it got.")
                     (setq p (1+ p)))
                   (let ((ly 0))
                     (dolist (lay layers)
-                      (setq x (nl-llm-wgpu-block lay x seq cfg))
+                      (setq x (funcall nso-p1--block-fn lay x seq cfg))
                       (when (= ly nso-p1--mid-layer)
                         (setq mid (copy-sequence x)))
                       (setq ly (1+ ly))))
@@ -163,13 +233,16 @@ only record of how far it got.")
                   (when (= 0 (mod i nso-p1--progress-every))
                     (let ((el (- (float-time) t1)))
                       (nso-p1--say "encoded %d/%d, %.0fs elapsed, %.0fs remaining"
-                                   i n el (* (/ el i) (- n i)))))))
-              (setq rows (nreverse rows))
+                                   i n el (* (/ el i) (- n i)))))
+                  (when (= 0 (mod i nso-p1--checkpoint-every))
+                    (nso-p1--write-states
+                     (nso-p1--merge-rows cached (reverse rows)) dim)
+                    (nso-p1--say "  checkpoint: %d rows on disk"
+                                 (+ (length cached) (length rows))))))
+              (setq rows (nso-p1--merge-rows cached (nreverse rows)))
+              (nso-p1--say "states: %d rows total" (length rows))
               (nso-p1--say "writing states to %s" nso-p1--states)
-              (with-temp-file nso-p1--states
-                (let ((print-level nil) (print-length nil))
-                  (prin1 (list :dim dim :mid-layer nso-p1--mid-layer :rows rows)
-                         (current-buffer))))
+              (nso-p1--write-states rows dim)
               (nso-p1--say "states written (%.0f MB)"
                            (/ (float (nth 7 (file-attributes nso-p1--states)))
                               1048576.0))
@@ -271,8 +344,10 @@ only record of how far it got.")
   (with-temp-file nso-p1--results
     (insert "#+TITLE: P1 results -- frozen Qwen3-0.6B as a Noul encoder\n")
     (insert (format "#+DATE: %s\n\n" (format-time-string "%Y-%m-%d %H:%M")))
-    (insert (format "Dataset: 140 minimal-pair examples, %d train / %d held-out,\n"
-                    ntrain ntest))
+    ;; Counted, not spelled out: the first version hardcoded 140 and kept
+    ;; printing it after the set grew to 252.
+    (insert (format "Dataset: %d minimal-pair examples, %d train / %d held-out,\n"
+                    (+ ntrain ntest) ntrain ntest))
     (insert "split by pair.  Majority-class baseline 0.500.  Unigram baseline at\n")
     (insert "chance out of fold (see test/probe-test.el).\n")
     (insert "A temperature marked * rested on the edge of the search range: the\n")

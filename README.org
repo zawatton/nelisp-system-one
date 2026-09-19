@@ -24,16 +24,23 @@ reports "well calibrated" for a 4x-overconfident model looks exactly like one
 that works.
 
 P1 shipped 2026-09-19 -- a frozen Qwen3-0.6B, pooled, with a linear Noul head,
-reaches *0.870* held-out accuracy against a majority baseline of *0.500*, and
-ECE 0.073 falling to 0.039 after temperature scaling.  The donor is a usable
-decision encoder.  Three things came out of it that the design document had
-guessed wrong: mid depth beats the final layer, the learned attention pool
-loses to both parameter-free poolings, and the calibration step was leaking
-twice over in ways that returned plausible numbers rather than errors.  Both
+reaches *0.857* held-out accuracy against a majority baseline of *0.500*, and
+ECE 0.051 falling to 0.040 after temperature scaling.  On the compositional
+subset, where both members of a pair share their polarity words and only the
+composition differs ("failed to lose" against "failed to win"), it reaches
+*0.792* over 48 examples where a bag of words scores 0.507.  So the donor is a
+usable decision encoder, and what it pools is sentence meaning rather than
+word identity.
+
+Four things came out of it: mid depth beats the final layer; the learned
+attention pool fails at mid depth for a reason that is not data quantity; the
+calibration step was leaking twice over in ways that returned plausible
+numbers rather than errors; and the run was three times slower than the
+hardware required, in two places that had nothing to do with the model.  Both
 leaks were caught by running the probe over synthetic noise, where every
 held-out number must come out at chance.
 
-=make test= runs 108 checks and needs no model weights.
+=make test= runs 110 checks and needs no model weights.
 
 Scope, settled 2026-09-19: *(A) spike*.  Done means the method demonstrably
 works at toy scale, with honest numbers including the negative ones -- phases

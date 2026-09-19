@@ -37,7 +37,7 @@
 ;;; --- shape ---------------------------------------------------------------
 
 (nso-t "the dataset loads" (and pt--ex (listp pt--ex)))
-(nso-t-num "140 examples" (float (length pt--ex)) 140.0 0.5)
+(nso-t-num "252 examples" (float (length pt--ex)) 252.0 0.5)
 
 (let ((by-pair (make-hash-table :test 'eql)))
   (dolist (e pt--ex)
@@ -50,7 +50,7 @@
                (unless (and (= 2 (length v)) (member 0 v) (member 1 v))
                  (setq bad (1+ bad))))
              by-pair)
-    (nso-t-num "70 pairs" (float pairs) 70.0 0.5)
+    (nso-t-num "126 pairs" (float pairs) 126.0 0.5)
     (nso-t "every pair is one yes and one no" (= 0 bad))))
 
 (let ((seen (make-hash-table :test 'equal)) (dups 0))
@@ -183,7 +183,7 @@
     (message "%s" (nso-probe-format-score "antonym pairs" s-easy))
     (message "%s" (nso-probe-format-score "compositional pairs" s-hard))
     (nso-t "every example got an out-of-fold prediction"
-           (= 140 (length (delq nil (copy-sequence probs)))))
+           (= 252 (length (delq nil (copy-sequence probs)))))
     ;; The baseline works: it fits what it is shown.  Without this row, the
     ;; chance results below would be indistinguishable from a broken probe.
     (nso-t-gt "the unigram baseline memorises its own training split"
@@ -295,6 +295,26 @@
   (nso-t-gt "the out-of-fold temperature is larger" t-oof t-train)
   (nso-t-lt "and does not make held-out calibration worse"
             (funcall ece t-oof) (+ 1e-9 (funcall ece 1.0))))
+
+
+;;; --- fewer pairs than folds ----------------------------------------------
+;;
+;; A six-example smoke run has four training examples and two pairs, and
+;; asking for three folds then leaves one with nothing in it.  Clamping is
+;; the right answer rather than signalling: the caller wants logits from a
+;; head that did not see the pair, and with two pairs that is leave-one-out.
+
+(let* ((items '(a b c d))
+       (ys '(1.0 0.0 1.0 0.0))
+       (pairs '(1 1 2 2))
+       (calls 0)
+       (out (nso-probe-oof-logits
+             items ys pairs
+             (lambda (_rows _ys) (setq calls (1+ calls)) (lambda (_x) (vector 1.0 0.0)))
+             3 20 0.5 0.05)))
+  (nso-t "two pairs with three folds requested does not signal"
+         (= 4 (length out)))
+  (nso-t-num "and degenerates to one fold per pair" (float calls) 2.0 0.5))
 
 (nso-t-done "probe")
 

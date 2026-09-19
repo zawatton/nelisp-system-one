@@ -229,38 +229,61 @@ zero, so the pool would never move; the asymmetry has to be seeded."
          (* 0.5 l2 (+ (nso-dot w w) (nso-dot u u)))))))
 
 (defun nso-attn-grad (model xss ys l2)
-  "Gradient of `nso-attn-loss'.  Returns (:du VEC :dw VEC :db FLOAT)."
+  "Gradient of `nso-attn-loss'.  Returns (:du VEC :dw VEC :db FLOAT).
+
+Written against reused scratch rather than by calling `nso-attn-forward' per
+example, which is the same arithmetic in the same order and a great deal less
+garbage.  The allocating version cost one softmax pair and one DIM-wide pooled
+vector per example per step: at 168 examples, 400 steps and dim 1024 that is
+67,200 fresh kilobyte vectors per training run, and the training runs four
+times per configuration.  Measured on this hardware, that put one attention
+configuration at 53 minutes.
+
+The order of every accumulation is unchanged, so the result is bit-identical
+to the allocating version and `test/head-test.el' checks exactly that -- an
+optimisation of a gradient is worth nothing if it is a different gradient."
   (let* ((dim (length (plist-get model :w)))
          (n (length xss))
+         (u (plist-get model :u))
+         (w (plist-get model :w))
+         (b (plist-get model :b))
          (du (nso-zeros dim))
          (dw (nso-zeros dim))
          (db 0.0)
+         (maxseq (let ((m 0)) (dolist (s xss) (setq m (max m (length s)))) m))
+         (scores (make-vector (max 1 maxseq) 0.0))
+         (aw (make-vector (max 1 maxseq) 0.0))
+         (da (make-vector (max 1 maxseq) 0.0))
+         (pooled (nso-zeros dim))
          (rest ys))
     (dolist (states xss)
-      (let* ((fw (nso-attn-forward model states))
-             (g (/ (- (plist-get fw :p) (car rest)) n))
-             (pooled (plist-get fw :pooled))
-             (a (plist-get fw :a))
-             (w (plist-get model :w))
-             (m (length states))
-             ;; dL/da_i = g * (w . h_i)
-             (da (nso-zeros m))
-             (i 0)
-             (dot-sum 0.0))
+      (let ((m (length states)) (i 0) (mx -1.0e30) (sum 0.0) (dot-sum 0.0)
+            z p g)
+        (dolist (h states) (aset scores i (nso-dot u h)) (setq i (1+ i)))
+        (dotimes (j m) (setq mx (max mx (aref scores j))))
+        (dotimes (j m)
+          (let ((e (exp (max (- nso-head-exp-clamp) (- (aref scores j) mx)))))
+            (aset aw j e)
+            (setq sum (+ sum e))))
+        (dotimes (j m) (aset aw j (/ (aref aw j) sum)))
+        (dotimes (j dim) (aset pooled j 0.0))
+        (setq i 0)
+        (dolist (h states) (nso-axpy pooled (aref aw i) h) (setq i (1+ i)))
+        (setq z (+ (nso-dot w pooled) b))
+        (setq p (nso-sigmoid z))
+        (setq g (/ (- p (car rest)) n))
         (nso-axpy dw g pooled)
         (setq db (+ db g))
-        (dolist (h states)
-          (aset da i (* g (nso-dot w h)))
-          (setq i (1+ i)))
-        ;; softmax backward: ds = a * (da - sum_j a_j da_j)
-        (dotimes (j m) (setq dot-sum (+ dot-sum (* (aref a j) (aref da j)))))
+        (setq i 0)
+        (dolist (h states) (aset da i (* g (nso-dot w h))) (setq i (1+ i)))
+        (dotimes (j m) (setq dot-sum (+ dot-sum (* (aref aw j) (aref da j)))))
         (setq i 0)
         (dolist (h states)
-          (nso-axpy du (* (aref a i) (- (aref da i) dot-sum)) h)
+          (nso-axpy du (* (aref aw i) (- (aref da i) dot-sum)) h)
           (setq i (1+ i))))
       (setq rest (cdr rest)))
-    (nso-axpy dw l2 (plist-get model :w))
-    (nso-axpy du l2 (plist-get model :u))
+    (nso-axpy dw l2 w)
+    (nso-axpy du l2 u)
     (list :du du :dw dw :db db)))
 
 (defun nso-attn-train (xss ys &optional steps lr l2)

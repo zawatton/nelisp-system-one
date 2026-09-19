@@ -225,7 +225,15 @@ all of train came back with T=0.21 and ECE 0.346.  Moving a leak is not the
 same as removing one.
 
 Returns a list aligned with ITEMS."
-  (let* ((folds (or folds 3))
+  (let* ((npairs (let ((h (make-hash-table :test 'eql)))
+                   (dolist (p pairs) (puthash p t h))
+                   (hash-table-count h)))
+         ;; More folds than pairs leaves a fold with nothing in it.  Clamping
+         ;; is the right answer rather than signalling: the caller asked for
+         ;; out-of-fold logits, and with three pairs the honest answer is
+         ;; three-fold degenerating to leave-one-pair-out, not a failure.  Two
+         ;; is the floor, because one fold is not out of anything.
+         (folds (max 2 (min (or folds 3) npairs)))
          (n (length items))
          (map (nso-probe-fold-map pairs folds))
          (out (make-vector n 0.0))
