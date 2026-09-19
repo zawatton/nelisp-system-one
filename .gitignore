@@ -1,0 +1,8 @@
+*.elc
+/target/
+/build/
+# Evaluation splits and fitted calibration parameters are a run's output.
+/build/calibration/
+# Donor-derived fixtures: regenerate from the sibling nelisp-llm.
+/test/fixtures/*.eld
+__pycache__/

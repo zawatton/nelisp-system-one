@@ -1,0 +1,30 @@
+#+TITLE: nelisp-system-one Design Docs
+#+OPTIONS: toc:nil num:nil
+
+* Design docs
+
+Each doc is /concept + application design/ only: the principle, the data
+structures and call-site changes it needs here, how to verify it against a
+reference, and a cost / risk / phasing estimate.  No implementation is implied
+by a doc landing -- these gate the work, they are not the work.
+
+| #  | Doc                                       | Status   | Effort  | Payoff                  |
+|----+-------------------------------------------+----------+---------+-------------------------|
+|  1 | [[file:01-system-one.org][System One models -- typed, calibrated, single-pass decisions]] | PLANNING | med-hi  | a decision layer that cannot emit an ill-typed answer |
+
+Scope, settled 2026-09-19: *(A) spike* -- phases P0-P3 of Doc 1.  Integration
+with anvil (P4) is out of scope and needs a new decision.
+
+** Reading order
+
+Doc 1 is the whole project at present.  Its §1 is the part to read before
+quoting anything about Jev anywhere: three of the four vendor claims transfer to
+this repository and one of them does not, and the doc says which is which.
+
+** Conventions inherited from the sibling repositories
+
+- A check that has never been seen to fail is not evidence.  Every gate ships
+  with a negative control that makes it red.
+- Negative results are reported, in the doc, next to the positive ones.
+- Under the NeLisp standalone reader, a =PASS maxdiff=0.00e+00= is suspect until
+  the helper is known to count NaN as a failure.

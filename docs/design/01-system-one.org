@@ -1,0 +1,362 @@
+#+TITLE: System One models -- typed, calibrated, single-pass decisions
+#+OPTIONS: toc:2 num:t
+#+STATUS: PLANNING, scope (A) spike (settled 2026-09-19) -- nothing implemented.  This doc gates the work; it is not the work.
+
+* Status
+
+Planning.  No code exists in this repository yet.  Every number quoted below
+that is not marked /measured here/ comes from a vendor claim or from a sibling
+repository's own test suite, and is labelled as such.
+
+Survey date: 2026-09-19.
+
+* 1. What this is, and what it is not
+
+On 2026-09-15 TypeSafe AI announced =Jev=, the first model of a category they
+call *System One models*: a model that takes unstructured program state as
+input and returns a *typed, probabilistic decision* in a single parallel pass,
+instead of emitting text one token at a time.
+
+This document is *not* a plan to reproduce Jev.  Jev cannot be reproduced:
+
+| artifact                         | availability                          |
+|----------------------------------+---------------------------------------|
+| model weights                    | closed -- hosted API, early access     |
+| training method (RLCD)           | named only; no paper, no details      |
+| architecture specifics           | not published                         |
+| self-hosting                     | not offered, not documented           |
+| public                           | API surface, Python/JS SDKs, 3 primitive types |
+
+RLCD is expanded by the vendor as /Reinforcement Learning for Calibrated
+Decisions/ and nothing further is said about it.  Any claim in this repository
+to have "implemented RLCD" would be unfounded, and must not be made.
+
+What *is* reproducible is the *category*.  The vendor's own description of a
+System One model decomposes into four separable claims, and they do not share a
+fate:
+
+| # | claim                                          | reproducible here? | why                                                |
+|---+------------------------------------------------+--------------------+----------------------------------------------------|
+| a | output is a value of a pre-declared type       | *yes, structurally* | if the output space is an enumeration, a type error is unrepresentable, not merely rare |
+| b | one parallel forward pass, no autoregression   | *yes, architecturally* | a decision head over a pooled encoder needs no decode loop |
+| c | probabilities are calibrated                   | *yes in effect, no in method* | calibration is measurable and trainable by standard means; RLCD itself is unavailable |
+| d | 40-200x faster, $0.042/MTok, output free       | *no*                | that is a serving-infrastructure claim about their cluster |
+
+Claim (a) is the interesting one, because it is the one usually stated loosely.
+"Cannot hallucinate" is true of a System One model in exactly one sense: it
+cannot emit a token sequence that fails to parse into the declared type, because
+it never emits tokens.  It can still be *wrong* -- it can pick the wrong option
+with high confidence.  Calibration, claim (c), is what turns that from a defect
+into a usable signal, and it is the only one of the four that requires real
+research effort here.  The rest is engineering.
+
+Claim (d) does not transfer and must never be quoted as if it did.  What can
+honestly be measured in this repository is the *relative* cost of one pooled
+forward pass against an autoregressive decode of the same decision on the same
+substrate.  That ratio is structural -- it is the reason the vendor's number is
+large -- and it survives the move to a slow interpreter, even though the
+absolute latency will not be remotely competitive.
+
+* 2. The primitives, as types
+
+The vendor exposes three question types.  Restated as Elisp signatures:
+
+#+begin_src elisp
+;; Choice -- pick exactly one option from a declared set.
+;;   Returns the chosen option, a probability for EVERY option, and a
+;;   confidence.  Cardinality is capped (the vendor caps at 255).
+(nso-choice STATE CRITERIA OPTIONS)
+  => (:choice OPTION :probabilities ((OPTION . P) ...) :confidence C)
+
+;; Score -- rate against ordered, described levels.
+;;   The levels are ORDINAL, not merely categorical: "poor < fair < good"
+;;   carries information a plain softmax over three labels discards.
+(nso-score STATE CRITERIA LEGEND)
+  => (:score LEVEL :probabilities ((LEVEL . P) ...) :confidence C)
+
+;; Noul -- a yes/no question.  Returns P(yes).
+(nso-noul STATE QUESTION)
+  => (:p-yes P :confidence C)
+#+end_src
+
+Two observations that shape the whole design:
+
+- *All three are the same object.*  Noul is Choice over =(yes no)= with the
+  answer reported as a single probability.  Score is Choice with an ordering
+  imposed on the options.  There is one head, with two specialisations, not
+  three architectures.
+
+- *Probability and confidence are different quantities and must not be
+  conflated.*  The per-option probabilities are a distribution over the answer;
+  confidence is a scalar about that distribution.  A uniform distribution over
+  two options and a uniform distribution over two hundred both have a "most
+  likely" option, but they are not equally uninformative.  Defining confidence
+  as =max p= silently makes the 200-way question look catastrophically
+  unconfident and the 2-way question look adequate, when the 200-way answer may
+  carry far more information.  §4 fixes a definition; the point here is that it
+  is a *design decision*, not a readout.
+
+* 3. Architecture
+
+The plan is a *frozen donor encoder plus a typed decision head*.  No
+pre-training.  The sibling =nelisp-llm= repository (Doc 8, phases 0-2d SHIPPED,
+phase 3 in progress) already imports Qwen3-0.6B as a 571 MiB int8 table, runs
+all 28 layers on the GPU, and trains a LoRA over the frozen base.  That is the
+substrate this repository consumes.
+
+** 3.1 Why not the obvious thing
+
+The obvious implementation is an =N=-way softmax head: a linear from the pooled
+hidden state to =N= logits.  It is wrong here for a specific reason -- the
+option set is *per query*, not per model.  A fixed =N=-way head would have to be
+retrained for every new question, and it has no way to use the option's own text
+("expired" vs "option_3").
+
+The head therefore *scores options against the state* rather than classifying
+the state into slots:
+
+#+begin_example
+  state text ──► frozen encoder ──► pool ──► s  (dim d)
+  option text ─► frozen encoder ──► pool ──► o_i (dim d)   for each option
+
+  logit_i = <W_s · s , W_o · o_i> / sqrt(d) + b(o_i)
+  p       = softmax(logit_1 .. logit_N)
+#+end_example
+
+This handles a variable option set, an option set never seen in training, and
+options whose text is informative -- at the cost of one encoder pass per option.
+Since options are typically short and highly reusable, they cache: an option
+embedding depends only on the option text, so a routing table of 20 options is
+embedded once and reused for every query.  The per-query cost stays *one* state
+pass, which is the property claim (b) rests on.
+
+The 255 cardinality cap is worth adopting, not because of a kernel limit but
+because it is a useful contract: it bounds the attention-free scoring loop and
+makes the "embed every option" cost predictable.
+
+** 3.2 Pooling
+
+Not yet decided, and it must be decided by measurement rather than by taste.
+Candidates: last-token hidden state (what a causal decoder is trained to make
+informative), mean over positions, or a learned attention pool.  A causal donor
+argues for last-token; the literature on using decoders as encoders is mixed.
+P1 measures all three on the same task and the doc records the loser.
+
+** 3.3 Ordinal heads for Score
+
+Score's levels are ordered, so a plain softmax throws away the constraint that
+confusing "good" with "excellent" is a smaller error than confusing it with
+"poor".  The standard fix is a cumulative-link head: predict =K-1= thresholds
+and read the level probabilities as differences of a monotone CDF.  Ordering is
+then structural, not learned, which is the same argument as claim (a) one level
+down.
+
+P2 must show this beats the plain softmax on an ordinal task, or drop it.  A
+mechanism that costs complexity and buys nothing measurable does not ship.
+
+* 4. Calibration -- the actual work
+
+Everything above is engineering with a known answer.  This section is not.
+
+** 4.1 What "calibrated" has to mean
+
+A model is calibrated if, among all the answers it gave probability 0.7, about
+70% are right.  This is an empirical property of a model *and a distribution of
+inputs*, which means:
+
+- calibration is measured on *held-out* data, never on the training set;
+- a model calibrated on one task's input distribution is not thereby calibrated
+  on another's;
+- a *claim* of calibration without a named evaluation distribution is vacuous.
+
+** 4.2 Training and post-hoc correction
+
+Two mechanisms, in order:
+
+1. *Proper scoring rule as the training objective.*  Negative log-likelihood and
+   Brier score are both minimised, in expectation, by reporting the true
+   probability -- that is what "proper" means.  Training a decision head with
+   NLL is therefore already calibration pressure; accuracy-only objectives are
+   not.
+2. *Post-hoc temperature scaling.*  A single scalar =T= dividing the logits,
+   fitted on a held-out split.  It cannot change any answer (it is monotone, so
+   argmax is invariant) and typically removes most of the miscalibration of a
+   neural classifier.  Vector scaling (per-class affine) is the next step up and
+   *can* change answers, so it needs its own accuracy check.
+
+Neither is RLCD.  Both are standard, reproducible, and sufficient to support the
+only claim this repository will make: /the reported probabilities are calibrated
+on the stated evaluation set, to the stated ECE/.
+
+** 4.3 The gate, and the trap in the gate
+
+Expected Calibration Error, the usual metric, is a binned statistic, and binning
+is where it goes wrong:
+
+- With few samples per bin, ECE is *biased low* -- a random model can look
+  calibrated.  The bin count and the sample count must be reported together, or
+  the number means nothing.
+- Equal-width bins and equal-mass bins give different answers on the same
+  predictions.  Pick one, state it, never switch it mid-project.
+
+So the gate is: *ECE on a named held-out set, with a stated binning scheme and
+sample count, plus a reliability diagram*, and the diagram is the part a human
+reads.
+
+** 4.4 Negative control (mandatory)
+
+This repository inherits a rule from its siblings: a check that has never been
+seen to fail is not evidence.  Before any calibration result is believed, the
+calibration gate must be run against a *deliberately miscalibrated* model -- the
+simplest being the same model with its temperature set to 0.25 or 4.0 -- and it
+must go red.  A calibration harness that reports "well calibrated" for both the
+real model and a 4x-overconfident one is measuring nothing, and this failure is
+easy to ship because the passing case looks identical either way.
+
+The same discipline applies to the type-safety claim: the suite must contain a
+head deliberately allowed to emit an out-of-set answer, and the type gate must
+catch it.
+
+* 5. What this cannot do
+
+A System One model gives up string generation.  It cannot summarise, cannot
+explain its answer, cannot write code, cannot answer an open question.  The
+vendor states this plainly and it is not a limitation to be engineered around --
+it is the trade that buys the single pass.
+
+The consequence for this repository is that a System One model is a *decision
+layer*, never a replacement for a language model.  Its use is the case where the
+answer set is known in advance and the same question is asked many times over a
+shared state.
+
+* 6. Phases
+
+Each phase states its own acceptance criterion.  A phase that cannot state one
+is not ready to start.
+
+** P0 -- harness and negative controls (no model)
+
+Build the evaluation harness *first*, against a stub model with known,
+hand-set probabilities.
+
+Accept when: ECE, reliability diagram and the type gate all report correctly on
+three synthetic stubs -- a perfectly calibrated stub, a 4x-overconfident stub,
+and a stub that emits an out-of-set answer -- and the latter two come out *red*.
+
+Rationale: this is the phase most likely to be skipped and the one that decides
+whether any later number is believable.
+
+** P1 -- Noul, end to end
+
+Frozen Qwen3-0.6B encoder + pooling + a single scalar head.  LoRA fit on a yes/no
+task.  All three pooling variants measured.
+
+Accept when: held-out accuracy beats the majority-class baseline by a stated
+margin; ECE reported before and after temperature scaling; the pooling
+comparison table is in this doc, loser included.
+
+** P2 -- Choice and Score
+
+Option-scoring head with a variable option set (=N= up to 255); ordinal
+cumulative-link head for Score.
+
+Accept when: Choice works on an option set held out from training (this is the
+whole point of scoring options rather than classifying into slots); the ordinal
+head beats a plain softmax on an ordinal task, /or/ is dropped and this doc says
+so.
+
+** P3 -- calibration proper
+
+Proper-scoring-rule objective, temperature and vector scaling, the full gate of
+§4.3 with its negative control.
+
+Accept when: ECE on a named held-out set is below a threshold fixed *before* the
+run, with binning scheme and =n= stated, and the miscalibrated control is red.
+
+** P4 -- integration with anvil (OUT OF SCOPE)
+
+Route =anvil-orchestrator= model selection through a Choice, gate on confidence,
+fall back to the existing path below threshold.
+
+*Out of scope.*  Section 8 settles the definition of done as (A), the spike,
+which ends at P3.  P4 is recorded here so that the earlier phases are shaped to
+leave it reachable -- not so that it can be started.  Reaching it requires a new
+decision and a revision of this document.
+
+** Cross-cutting: NeLisp portability
+
+The CPU path should run under the NeLisp standalone reader, as =nelisp-llm='s
+does.  The known gaps and their absorbed workarounds are already catalogued
+(=nelisp-llm/lisp/nl-llm-compat.el=); the one that matters most here is that
+NeLisp's =exp= returns NaN for very negative arguments, which silently turns a
+masked softmax into NaN while max-accumulating test helpers report
+=PASS maxdiff=0.00e+00=.  Any test helper written in this repository counts NaN
+as a failure from its first line.
+
+* 7. Cost and risk
+
+| risk                                                  | severity | mitigation                                      |
+|-------------------------------------------------------+----------+-------------------------------------------------|
+| a 0.6B causal donor pools into a poor sentence encoder | high     | P1 measures three poolings and can fail honestly |
+| calibration harness silently vacuous                  | high     | P0 negative controls, before any model exists   |
+| toy-scale results do not survive a real task          | medium   | P1/P2 acceptance is on held-out data only       |
+| ordinal head adds complexity for nothing              | low      | P2 may drop it; that outcome is pre-authorised  |
+| vendor claim (d) leaks into this repo's language      | medium   | §1 table; no speed claim without a local measurement |
+
+Effort: P0 small, P1 medium, P2 medium, P3 medium-high and research-shaped.
+P4 is out of scope (section 8) and is not costed.
+
+* 8. Definition of done -- settled: (A) spike
+
+Settled 2026-09-19.  The two readings that were open:
+
+- *(A) Spike.*  Done = the method demonstrably works at toy scale, with honest
+  numbers including the negative ones.  P0-P3.  The deliverable is knowledge.
+- *(B) Production.*  Done = anvil's routing actually runs through this, with a
+  fallback path and an operational confidence threshold.  P0-P4, and P4 carries
+  reliability work not costed above.
+
+*(A) is the scope of this project.*  It is complete when P3's acceptance
+criterion is met, and it is complete whether the answer is encouraging or not: a
+spike that establishes "a 0.6B causal donor does not pool into a decision
+encoder good enough to be worth calibrating" has met its definition of done, and
+that result gets written up here rather than worked around.
+
+Two consequences that bind the work:
+
+- *No production obligations are assumed.*  Latency budgets, failure modes,
+  rollback paths and operational thresholds belong to (B).  Building them anyway
+  is scope creep and costs the spike the speed that is its only advantage.
+- *No production claims may be made.*  Nothing here may be described as ready to
+  route anvil traffic on the strength of P0-P3.
+
+Reopening the question is allowed and is a new decision, recorded by revising
+this section -- not something an encouraging P3 result does on its own.
+
+* 9. Relationship to the sibling repositories
+
+- =nelisp-photon= -- tensor core, autograd, weight IO.  Consumed, unchanged.
+- =nelisp-llm= -- the donor import (Doc 8), LoRA over a frozen int8 base, the
+  Qwen tokenizer, the GPU backend, the NeLisp compat layer.  Consumed.  This
+  repository does not fork it.
+- =nelisp-gpu= -- SPIR-V/Vulkan kernels, reached through =nelisp-llm=.
+- =anvil.el= -- the eventual consumer, at P4 and not before.
+
+This is a separate repository rather than =nelisp-llm/docs/design/09= because
+the object is different: =nelisp-llm= builds and trains language models, and a
+System One model is defined by *not* being one.  Sharing the substrate is not a
+reason to share the repository.
+
+* Sources
+
+Surveyed 2026-09-19.  All vendor claims above trace to:
+
+- TypeSafe AI, "Introducing System One Models & Jev",
+  https://typesafe.ai/blog/introducing-system-one-models-and-jev
+- TypeSafe AI documentation, https://docs.typesafe.ai/introduction and the
+  documentation index at https://docs.typesafe.ai/llms.txt (primitives: Choice,
+  Score, Noul; SDK surface; cardinality cap)
+- GIGAZINE, 2026-09-16, https://gigazine.net/news/20260916-system-one-jev/
+
+No paper exists for RLCD as of the survey date.  If one appears, §4 is the
+section to revisit.
