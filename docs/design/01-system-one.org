@@ -418,7 +418,9 @@ By difficulty, on the held-out split:
   all.  That row says the joint optimisation failed on 94 examples, not that
   mid-depth attention pooling is a bad idea.  Either way it is not worth
   carrying into P2 in this form; the parameter-free poolings are better and
-  cheaper.  Section 3.2 said the loser would be recorded, and this is it.
+  cheaper.  Section 3.2 said the loser would be recorded, and this is it.  The
+  noise control below narrows the diagnosis: on random features of the same
+  shape the same pool trains to 1.000, so this is not a capacity limit.
 
 - *The compositional pairs are much harder, as they were built to be.*  Best
   antonym accuracy 0.917 against 0.700 compositional.  =final/last= scores
@@ -474,6 +476,59 @@ chance.  Neither produced an error; both produced plausible-looking numbers.
 
 Both are pinned by tests that fail if the old behaviour returns, and the second
 test was mutation-checked against a deliberately broken implementation.
+
+*** The control, re-run against the shipped code
+
+The two defects above were found with earlier versions of the probe, so the
+control was run again end to end after the fixes -- the same 140 rows, the same
+1024 dimensions, the same two depths, with noise where the hidden states would
+be.  Every held-out number must come out at chance, and every temperature must
+flatten rather than sharpen.
+
+| depth | pooling | train acc | held-out acc |        95% CI | ECE   | after T |      T |
+|-------+---------+-----------+--------------+---------------+-------+---------+--------|
+| final | last    |     1.000 |        0.522 | [0.381,0.659] | 0.169 |   0.011 | 20.00* |
+| final | mean    |     1.000 |        0.587 | [0.443,0.717] | 0.189 |   0.073 |  15.71 |
+| final | attn    |     1.000 |        0.522 | [0.381,0.659] | 0.122 |   0.014 | 20.00* |
+| mid   | last    |     1.000 |        0.500 | [0.361,0.639] | 0.207 |   0.012 | 20.00* |
+| mid   | mean    |     1.000 |        0.543 | [0.402,0.678] | 0.147 |   0.032 | 20.00* |
+| mid   | attn    |     1.000 |        0.522 | [0.381,0.659] | 0.130 |   0.013 | 20.00* |
+
+Four things this says:
+
+- *No configuration finds signal in noise.*  Held-out accuracy spans 0.500 to
+  0.587 and every interval contains 0.5.  The 0.870 in the results table is not
+  an artefact of the pipeline.
+
+- *The attention fix holds.*  Before it, =attn= on this same data returned
+  T = 0.21 and drove ECE from 0.122 to 0.346.  It now returns a flattening
+  temperature and 0.122 -> 0.014, like every other row.
+
+- *Every row memorises the training split completely.*  Train accuracy 1.000 on
+  pure noise is the precondition for the calibration trap: the probe has ample
+  capacity, the logits come out confident, and only the held-out column knows
+  otherwise.
+
+- *A temperature at the bound is the correct answer here.*  With no signal the
+  honest distribution is flat, so the optimum is past 20 and the search returns
+  its ceiling.  Five rows do.  This is why the figure is marked rather than
+  printed as a fit.
+
+One row is worth flagging as unexplained.  On noise, =mid/attn= trains to
+1.000; on the real mid-depth features it reached only 0.532 and never fitted.
+So the failure there is not a capacity limit of the model class -- random
+features of the same shape fit perfectly.  The plausible cause is scale: real
+hidden states carry magnitudes in the hundreds, so =softmax(u . h)= saturates
+to a near one-hot pool on the first step and the gradient through it vanishes,
+where noise features in [-0.5, 0.5] never saturate.  That is a hypothesis, not
+a measurement, and normalising the pool scores before the softmax would test
+it.  P2 should either do that or drop the learned pool.
+
+And one caution the control illustrates better than the results table does:
+on *pure noise*, =final/last= scores *0.900* on the compositional subset.  With
+n = 10 a single example is ten points, and a striking number there means
+nothing at all.
+
 
 ** P2 -- Choice and Score
 
