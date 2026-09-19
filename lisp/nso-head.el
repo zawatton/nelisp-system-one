@@ -302,6 +302,26 @@ optimisation of a gradient is worth nothing if it is a different gradient."
       (setq i (1+ i)))
     model))
 
+(defun nso-attn-standardizer (xss)
+  "Per-dimension statistics over every position of every example in XSS.
+
+`nso-attn-train' was the one path in this repository fitting a head on raw
+features: `last' and `mean' hand their pooled vectors to
+`nso-probe-fit-and-score', which standardises before fitting, while the joint
+model trained straight on hidden states whose RMS is about 3.  With one
+learning rate shared between the paths, that difference decided whether the
+joint model converged, and it decided it differently at the two depths --
+which is what produced P1's unexplained 0.500.  Measured: at 200 steps the
+joint model reaches 0.976 training accuracy at mid depth with lr 0.1 and
+0.500 at 0.5, 0.02 and 0.005, with losses up to 19 where it diverges."
+  (nso-standardizer (apply #'append xss)))
+
+(defun nso-attn-standardize (std xss)
+  "Apply STD to every position of every example in XSS."
+  (mapcar (lambda (states)
+            (mapcar (lambda (h) (nso-standardize std h)) states))
+          xss))
+
 ;;; Temperature scaling
 ;;
 ;; One scalar, fitted on a held-out split by minimising NLL.  It is monotone,

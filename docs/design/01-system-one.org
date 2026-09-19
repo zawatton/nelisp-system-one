@@ -17,11 +17,12 @@ donor is a usable decision encoder, and what it pools is sentence meaning
 rather than word identity.
 
 Four things came out of it that this document had guessed wrong or could not
-have known: mid depth beats the final layer; the learned attention pool fails
-at mid depth for a reason that is not data quantity; the calibration step was
-leaking twice over in ways that produced plausible numbers rather than errors;
-and the run was three times slower than the hardware required, in two places
-that had nothing to do with the model.  See the P1 entry in section 6.
+have known: mid depth beats the final layer; the learned attention pool is not
+decided by these runs at all, because its result inverts when its inputs are
+rescaled; the calibration step was leaking twice over in ways that produced
+plausible numbers rather than errors; and the run was three times slower than
+the hardware required, in two places that had nothing to do with the model.
+See the P1 entry in section 6.
 
 Numbers marked /measured/ come from this repository's own suites and can be
 reproduced with =make test=.  Every other number is a vendor claim or a sibling
@@ -168,14 +169,14 @@ depth (layer 14 of 28) beat the final layer for both parameter-free poolings --
 specialised for predicting the next token, which is not the same thing as
 representing the sentence.
 
-The attention pool, the only variant with parameters of its own, splits by
-depth.  At final depth it is a data-quantity question and more data settled it:
-0.587 with 94 training examples, 0.702 with 168.  At mid depth it does not fit
-at either size -- training accuracy 0.532 then 0.500, on data every other
-configuration memorises completely -- and the noise control rules out capacity,
-since the same pool trains to 1.000 on random features of the same shape.  The
-remaining suspect is scale, and it predicts exactly this split; see the P1
-entry in section 6.
+The attention pool, the only variant with parameters of its own, is *not
+decided by P1*.  Its outcome depends on whether one fixed learning rate suits
+the feature scale, and standardising its inputs swaps which depth fails --
+mid 0.476 to 0.857 held-out, final 0.702 to 0.512.  Deciding it needs a
+learning rate chosen per configuration, which is the hyperparameter search P1
+ruled out; that belongs to P2.  When it does train it ties the best
+parameter-free pooling, so it is not redundant either.  See the P1 entry in
+section 6.
 
 ** 3.3 Ordinal heads for Score
 
@@ -399,10 +400,10 @@ means no selection can have leaked.
 |-------+---------+-----------+--------------+---------------+-------+---------+--------|
 | final | last    |     1.000 |        0.810 | [0.713,0.879] | 0.107 |   0.096 | 1.12   |
 | final | mean    |     1.000 |        0.798 | [0.700,0.870] | 0.093 |   0.046 | 1.84   |
-| final | attn    |     1.000 |        0.702 | [0.598,0.790] | 0.170 |   0.054 | 4.90   |
+| final | attn    |     0.518 |        0.512 | [0.407,0.616] | 0.480 |   0.476 | 1.29   |
 | mid   | last    |     1.000 |    *0.857*   | [0.767,0.916] | 0.051 | *0.040* | 1.18   |
 | mid   | mean    |     1.000 |        0.833 | [0.739,0.898] | 0.066 |   0.028 | 1.44   |
-| mid   | attn    |     0.500 |        0.476 | [0.373,0.582] | 0.524 |   0.281 | 20.00* |
+| mid   | attn    |     1.000 |        0.857 | [0.767,0.916] | 0.055 |   0.020 | 1.25   |
 
 =*= the temperature rested on the edge of the search range, so the figure is
 the bound rather than a fit.
@@ -413,10 +414,10 @@ By difficulty, on the held-out split:
 |-------+---------+---------------+---------------------+------------------|
 | final | last    |  0.889 (n=36) |        0.750 (n=48) |    [0.612,0.851] |
 | final | mean    |  0.833 (n=36) |        0.771 (n=48) |    [0.635,0.867] |
-| final | attn    |  0.778 (n=36) |        0.646 (n=48) |    [0.505,0.767] |
+| final | attn    |  0.500 (n=36) |        0.521 (n=48) |    [0.388,0.651] |
 | mid   | last    |  0.944 (n=36) |    *0.792* (n=48)   |    [0.657,0.883] |
 | mid   | mean    |  0.944 (n=36) |        0.750 (n=48) |    [0.612,0.851] |
-| mid   | attn    |  0.500 (n=36) |        0.458 (n=48) |    [0.325,0.598] |
+| mid   | attn    |  0.972 (n=36) |        0.771 (n=48) |    [0.635,0.867] |
 
 *** What the table says
 
@@ -437,20 +438,21 @@ By difficulty, on the held-out split:
   opposite.  The final layer is specialised for predicting the next token,
   which is not the same as representing the sentence.
 
-- *The learned attention pool splits in two, and the split is informative.*
-  At final depth, tripling the data fixed it: 0.587 with 94 training examples,
-  0.702 with 168, training accuracy 0.830 to 1.000.  At mid depth it still does
-  not fit at all -- training accuracy *0.500* on data every other configuration
-  memorises completely.  So the earlier reading, "a learned pool is not worth
-  its parameters on this much data", was half wrong: it was a data-quantity
-  problem at final depth and is something else at mid depth.  Section 4.4's
-  noise control already narrowed that something else: on random features of
-  the same shape the same pool trains to 1.000, so it is not a capacity limit.
-  The scale hypothesis in that section -- mid-depth activations are large
-  enough to saturate =softmax(u . h)= on the first step and kill the gradient
-  -- now has a sharper test available, because it predicts exactly this
-  pattern: failure at the depth with the larger activations, success at the
-  other.  Normalising the pool scores would settle it.
+- *The learned attention pool is undecided, and the rows above do not decide
+  it.*  Its outcome turned out to be governed by whether one fixed learning
+  rate happened to suit the feature scale, which differs by depth.  Fitting
+  the pool on raw states, mid depth failed (training accuracy 0.500) and final
+  depth worked (1.000, held-out 0.702).  Standardising the states first --
+  which is what the other two poolings have always got -- *swapped which depth
+  fails*: mid now trains to 1.000 and reaches 0.857 held-out, and final drops
+  to 0.518 training accuracy.  A variant whose result inverts under a change
+  of conditioning is not measuring its pooling.  The investigation is below.
+
+  Worth noting against the earlier reading: when it does train, it is not a
+  loser.  Standardised =mid/attn= ties =mid/last= at 0.857, with the best
+  post-temperature ECE in the table (0.020) and the best antonym accuracy
+  (0.972).  "The learned pool loses to both parameter-free poolings" was
+  wrong in both directions, and is withdrawn.
 
 - *Temperature scaling behaves for everything that learned*, landing between
   1.12 and 4.90 and lowering ECE in every case, best at 0.066 -> 0.028.  The
@@ -468,6 +470,82 @@ By difficulty, on the held-out split:
   not.  A step needs forward and backward through the encoder -- the sibling
   repository measures 5.4 minutes for one at seq 1 -- so a hundred steps is a
   day of GPU against an hour for the whole frozen sweep.  Deferred explicitly.
+
+*** Chasing the attention pool: a refuted hypothesis and the real cause
+
+The unexplained row was =mid/attn=, which did not fit at 140 examples or at
+252, on data every other configuration memorised completely.  Section 4.4 had
+recorded a hypothesis -- scale: real hidden states are large, so =softmax(u . h)=
+saturates on the first step and the gradient, which carries a factor
+=a(1 - a)=, vanishes.  Mid-depth activations being the larger ones would then
+explain why mid alone fails.
+
+*The hypothesis was written as four predictions before anything was measured*,
+with the rule that all four had to hold (=tools/attn-scale-probe.el=, which
+reads the saved states and needs no GPU):
+
+| # | prediction                                        | final  | mid    | verdict |
+|---+---------------------------------------------------+--------+--------+---------|
+| 1 | mid-depth states are larger                       | 2.976  | 3.725  | holds   |
+| 2 | mid-depth score spread is wider                   | 0.1735 | 0.2921 | holds   |
+| 3 | mid-depth softmax is nearer one-hot               | 0.1266 | 0.1350 | holds   |
+| 4 | mid-depth |du| at initialisation is smaller       | 0      | 0      | *refuted* |
+
+Three held and the hypothesis is still dead, which is the argument for writing
+the predictions down first.  Prediction 1 holds at a ratio of 1.25; had that
+been the only thing looked at, it would have read as confirmation.  What the
+other rows say is that the mechanism is absent: a uniform softmax over these
+sequences is 0.1149, and the measured peak is 0.1350, so the pool starts very
+nearly flat and never saturates at either depth.  And =|du|= is *exactly zero*
+at both depths at initialisation -- because the head is zero-initialised, so
+=da_i = g (w . h_i) = 0= and every term of =du= vanishes.  A quantity that is
+identical at the two depths cannot explain a difference between them.
+
+That zero was the useful part.  Looking for what else differed turned up an
+asymmetry that had been there since the head was written: *=attn= was the only
+path in this repository fitting on raw features.*  =last= and =mean= hand
+their pooled vectors to `nso-probe-fit-and-score', which standardises before
+fitting; the joint model trained straight on hidden states with an RMS near 3.
+Both paths used the same learning rate, 0.5.
+
+Measured across learning rates (=tools/attn-lr-probe.el=, 200 steps):
+
+| depth | lr    | train acc | loss   |
+|-------+-------+-----------+--------|
+| final | 0.5   |     0.500 | 19.28  |
+| final | 0.1   |     0.500 | 18.04  |
+| final | 0.02  |     0.500 | 13.66  |
+| final | 0.005 |     0.500 |  4.447 |
+| mid   | 0.5   |     0.500 | 14.17  |
+| mid   | 0.1   |    *0.976* |  7.348 |
+| mid   | 0.02  |     0.500 |  2.177 |
+| mid   | 0.005 |     0.500 |  0.695 |
+
+A cross-entropy of 19 is not a model that failed to learn, it is one that is
+confidently wrong: divergence.  A loss of 0.695 is =ln 2=, a model that has
+not moved.  Between them is a narrow window, and at mid depth lr 0.1 lands in
+it and reaches 0.976.  So the failure was step size, not representation.
+
+Standardising the states before the pool -- giving =attn= the conditioning the
+other two always had, with statistics from the fit rows only -- confirmed it in
+the sharpest available way: *it swapped which depth fails.*
+
+| conditioning        | final/attn train | held-out | mid/attn train | held-out |
+|---------------------+------------------+----------+----------------+----------|
+| raw states          |            1.000 |    0.702 |          0.500 |    0.476 |
+| standardised states |            0.518 |    0.512 |          1.000 |   *0.857* |
+
+A result that inverts when the inputs are rescaled is a result about the
+optimiser.  Neither row measures the pooling, so *the attention variant is
+undecided* and P1's earlier claim that it loses is withdrawn.
+
+Deciding it fairly needs a learning rate chosen per configuration on a
+validation split, which is exactly the hyperparameter search P1 ruled out to
+keep selection from leaking.  That is a real cost and it belongs to P2, with
+the reason recorded rather than the search quietly added here.  What can be
+said already: on the one setting where it trains, the learned pool is
+competitive rather than redundant -- 0.857 held-out, the table's best
+post-temperature ECE at 0.020, and its best antonym accuracy at 0.972.
 
 *** What the run cost, and what it costs now
 
@@ -560,9 +638,12 @@ Four things this says:
   its ceiling.  Five rows do.  This is why the figure is marked rather than
   printed as a fit.
 
-One row is worth flagging as unexplained.  On noise, =mid/attn= trains to
+One row was worth flagging at the time.  On noise, =mid/attn= trains to
 1.000; on the real mid-depth features it reached 0.532 at 140 examples and
-0.500 at 252, never fitting at either size.
+0.500 at 252, never fitting at either size.  /Resolved: the cause was the
+learning rate meeting unstandardised features, not the features themselves --
+see "Chasing the attention pool" above.  The scale hypothesis sketched in the
+rest of this paragraph was measured and refuted./
 So the failure there is not a capacity limit of the model class -- random
 features of the same shape fit perfectly.  The plausible cause is scale: real
 hidden states carry magnitudes in the hundreds, so =softmax(u . h)= saturates

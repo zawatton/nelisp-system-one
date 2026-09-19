@@ -283,17 +283,33 @@ Examples already present in the states file are reused rather than re-encoded."
         ;; 0.346, while the two fixed poolings reached 0.011 and 0.073.
         (let* ((featurizer
                 (lambda (fit-rows fit-ys)
-                  (let ((u (when (eq kind 'attn)
-                             (plist-get (nso-attn-train
-                                         (mapcar (lambda (r) (plist-get r depth))
-                                                 fit-rows)
-                                         fit-ys 400 0.5 0.05)
-                                        :u))))
+                  ;; The attention pool trains on STANDARDISED states.  Fitting
+                  ;; it on raw ones was the single asymmetry between this path
+                  ;; and the other two -- they standardise before the head --
+                  ;; and with a shared learning rate it decided convergence
+                  ;; differently at the two depths, which is where P1's
+                  ;; unexplained 0.500 came from.  Statistics come from the fit
+                  ;; rows only, like every other standardiser here.
+                  (let* ((std (when (eq kind 'attn)
+                                (nso-attn-standardizer
+                                 (mapcar (lambda (r) (plist-get r depth))
+                                         fit-rows))))
+                         (u (when (eq kind 'attn)
+                              (plist-get (nso-attn-train
+                                          (nso-attn-standardize
+                                           std
+                                           (mapcar (lambda (r) (plist-get r depth))
+                                                   fit-rows))
+                                          fit-ys 400 0.5 0.05)
+                                         :u))))
                     (lambda (r)
                       (let ((states (plist-get r depth)))
                         (cond ((eq kind 'last) (nso-pool-last states))
                               ((eq kind 'mean) (nso-pool-mean states))
-                              ((eq kind 'attn) (car (nso-pool-attn u states)))
+                              ((eq kind 'attn)
+                               (car (nso-pool-attn
+                                     u (mapcar (lambda (h) (nso-standardize std h))
+                                               states))))
                               (t (error "p1: unknown pooling %S" kind))))))))
                ;; The reported model is fitted on the whole training split.
                (feat (funcall featurizer train try))

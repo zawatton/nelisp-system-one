@@ -33,12 +33,12 @@ usable decision encoder, and what it pools is sentence meaning rather than
 word identity.
 
 Four things came out of it: mid depth beats the final layer; the learned
-attention pool fails at mid depth for a reason that is not data quantity; the
-calibration step was leaking twice over in ways that returned plausible
-numbers rather than errors; and the run was three times slower than the
-hardware required, in two places that had nothing to do with the model.  Both
-leaks were caught by running the probe over synthetic noise, where every
-held-out number must come out at chance.
+attention pool is not decided by these runs at all, because standardising its
+inputs swaps which depth fails; the calibration step was leaking twice over in
+ways that returned plausible numbers rather than errors; and the run was three
+times slower than the hardware required, in two places that had nothing to do
+with the model.  Both leaks were caught by running the probe over synthetic
+noise, where every held-out number must come out at chance.
 
 =make test= runs 110 checks and needs no model weights.
 
