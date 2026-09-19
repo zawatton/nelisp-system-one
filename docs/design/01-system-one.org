@@ -1,12 +1,20 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0 SHIPPED 2026-09-19; P1-P3 open.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED 2026-09-19; P2-P3 open.
 
 * Status
 
 P0 shipped 2026-09-19: the evaluation harness, the type gate, and the stubs and
-mutations that make both of them evidence rather than decoration.  No model
-exists yet, which is the point -- see the P0 entry in section 6.
+mutations that make both of them evidence rather than decoration.
+
+P1 shipped 2026-09-19 and answers the question the project was built to ask: a
+frozen Qwen3-0.6B pooled into a linear head reaches *0.870* held-out against a
+majority baseline of *0.500*, with ECE 0.073 falling to 0.039 after temperature
+scaling.  The donor is a usable decision encoder.  Three findings came with it,
+two of them corrections to this document: mid depth beats the final layer, the
+learned attention pool loses to both parameter-free poolings, and the
+calibration step was twice leaking in ways that produced plausible numbers
+rather than errors.  See the P1 entry in section 6.
 
 Numbers marked /measured/ come from this repository's own suites and can be
 reproduced with =make test=.  Every other number is a vendor claim or a sibling
@@ -140,11 +148,23 @@ makes the "embed every option" cost predictable.
 
 ** 3.2 Pooling
 
-Not yet decided, and it must be decided by measurement rather than by taste.
-Candidates: last-token hidden state (what a causal decoder is trained to make
-informative), mean over positions, or a learned attention pool.  A causal donor
-argues for last-token; the literature on using decoders as encoders is mixed.
-P1 measures all three on the same task and the doc records the loser.
+/Settled by P1's measurements; the original reasoning is kept because it was
+wrong in an instructive way./
+
+The first draft argued that a causal donor favours the last-token state, since
+that is the position the next token is read from, and it named the learned
+attention pool as the sophisticated option.  Measured, on the same task and the
+same forward passes: *mean and last are close, the learned pool loses badly,
+and the depth the states are taken from matters more than the pooling.*  Mid
+depth (layer 14 of 28) beat the final layer for both parameter-free poolings --
+0.870 against 0.761 for last, 0.848 against 0.783 for mean.  The final layer is
+specialised for predicting the next token, which is not the same thing as
+representing the sentence.
+
+The attention pool reached 0.587 at final depth and 0.500 -- chance -- at mid
+depth, where its training accuracy of 0.532 says it never fitted at all.  It is
+the only variant with parameters of its own, and on 94 examples that is a cost
+rather than a capability.  See the P1 entry in section 6 for the full table.
 
 ** 3.3 Ordinal heads for Score
 
@@ -326,7 +346,7 @@ ECE here is top-label ECE, which is a different quantity, and deciding what
 not a gap in P0.
 
 
-** P1 -- Noul, end to end
+** P1 -- Noul, end to end [SHIPPED 2026-09-19]
 
 Frozen Qwen3-0.6B encoder + pooling + a single scalar head.  LoRA fit on a yes/no
 task.  All three pooling variants measured.
@@ -334,6 +354,126 @@ task.  All three pooling variants measured.
 Accept when: held-out accuracy beats the majority-class baseline by a stated
 margin; ECE reported before and after temperature scaling; the pooling
 comparison table is in this doc, loser included.
+
+*** The answer
+
+*A frozen 0.6B causal donor does pool into something a linear head can use.*
+Best configuration reaches *0.870* held-out against a majority baseline of
+exactly *0.500*, with a 95% interval of [0.743, 0.939] that excludes chance by
+a wide margin.  That is the question P1 existed to answer, and the answer is
+yes.
+
+*** What was run
+
+140 minimal-pair examples ("does this sentence report a successful outcome?"),
+94 train / 46 held-out, *split by pair* so a sentence's near-duplicate partner
+never sits on the other side.  The encoder ran once per example with all 28
+layers resident on the GPU -- 39.7s each, 82 minutes for the set -- and the
+per-position hidden states were kept at two depths, so every pooling and both
+depths come from the same forward pass and cost nothing extra.
+
+No hyperparameter search: L2 = 0.05, 600 steps, lr 0.5, fixed in advance.  A
+search would have needed its own held-out split to be honest, and not doing one
+means no selection can have leaked.
+
+*** Results
+
+| depth | pooling | train acc | held-out acc | 95% CI        | ECE   | after T | T      |
+|-------+---------+-----------+--------------+---------------+-------+---------+--------|
+| final | last    |     1.000 |        0.761 | [0.621,0.861] | 0.133 |   0.111 | 1.28   |
+| final | mean    |     1.000 |        0.783 | [0.644,0.877] | 0.127 |   0.108 | 1.52   |
+| final | attn    |     0.830 |        0.587 | [0.443,0.717] | 0.262 |   0.089 | 20.00* |
+| mid   | last    |     1.000 |    *0.870*   | [0.743,0.939] | 0.073 | *0.039* | 1.09   |
+| mid   | mean    |     1.000 |        0.848 | [0.718,0.924] | 0.097 |   0.087 | 1.12   |
+| mid   | attn    |     0.532 |        0.500 | [0.361,0.639] | 0.499 |   0.260 | 20.00* |
+
+=*= the temperature rested on the edge of the search range, so the figure is
+the bound rather than a fit.
+
+By difficulty, on the held-out split:
+
+| depth | pooling | antonym pairs | compositional pairs |
+|-------+---------+---------------+---------------------|
+| final | last    |  0.861 (n=36) |        0.400 (n=10) |
+| final | mean    |  0.806 (n=36) |        0.700 (n=10) |
+| final | attn    |  0.583 (n=36) |        0.600 (n=10) |
+| mid   | last    |  0.917 (n=36) |        0.700 (n=10) |
+| mid   | mean    |  0.917 (n=36) |        0.600 (n=10) |
+| mid   | attn    |  0.500 (n=36) |        0.500 (n=10) |
+
+*** What the table says
+
+- *Mid depth beats the final layer, consistently.*  0.870 against 0.761 for
+  =last=, 0.848 against 0.783 for =mean=.  Section 3.2 guessed the opposite --
+  that a causal decoder's last position would be the informative one, since it
+  is what the next token is read from.  The final layer is specialised for
+  predicting the next token, which is not the same as representing the
+  sentence.  Capturing both depths cost nothing because they came from one
+  forward pass; had the doc's guess been trusted, the better configuration
+  would simply not have been measured.
+
+- *The learned attention pool lost, and it is the one with extra parameters.*
+  At final depth 0.587, at mid depth 0.500 -- exactly chance.  The mid-depth
+  row needs care: its *training* accuracy is 0.532, so the pool did not fit at
+  all.  That row says the joint optimisation failed on 94 examples, not that
+  mid-depth attention pooling is a bad idea.  Either way it is not worth
+  carrying into P2 in this form; the parameter-free poolings are better and
+  cheaper.  Section 3.2 said the loser would be recorded, and this is it.
+
+- *The compositional pairs are much harder, as they were built to be.*  Best
+  antonym accuracy 0.917 against 0.700 compositional.  =final/last= scores
+  0.400 there, below chance.  All of these rest on *n = 10* -- one example is
+  ten points -- so the subset is an indication, not a measurement.  P2 should
+  enlarge it before anything is concluded about compositional meaning.
+
+- *Temperature scaling behaves.*  For the four rows that fit, T lands between
+  1.09 and 1.52 -- mild flattening, which is what an overfitting probe should
+  need -- and ECE falls in every case, best at 0.073 -> 0.039.  The two
+  saturated rows are the two that did not learn: with uninformative logits the
+  honest temperature is "flatten to nothing", and the search returns its bound.
+
+- *Four of six rows memorise the training split completely* (train accuracy
+  1.000 on 94 examples in 1024 dimensions).  Expected, and the reason held-out
+  is the only column that counts.
+
+*** Honest limits
+
+- =n = 46= held-out.  The intervals are wide and two configurations one point
+  apart are not distinguishable.  =mid/last= against =mid/mean= is not a
+  ranking, it is a tie.
+- The dataset was written for this repository rather than drawn from a corpus.
+  The labels are the author's, the sentences are short and clean, and none of it
+  resembles the messy program state a System One model would meet in use.
+- *No LoRA.*  The phase description named one, and the acceptance criterion did
+  not.  A LoRA step needs forward and backward through the encoder per step --
+  the sibling repository measures 5.4 minutes for one at seq 1 -- so a hundred
+  steps is a day of GPU, against 82 minutes for the whole frozen-feature sweep.
+  Deferred rather than quietly dropped: the frozen probe answers P1's question,
+  and adapting the encoder is a P2/P3 question about how much further it can be
+  pushed.
+
+*** Two defects the controls caught before they reached this table
+
+Both were found by running the probe over *synthetic noise* at full scale
+(=tools/p1-fake-states.el=), where every held-out number must come out at
+chance.  Neither produced an error; both produced plausible-looking numbers.
+
+1. *The temperature was fitted on the training split's own logits.*  The head
+   has already separated those, so the NLL-optimal temperature there is a
+   /sharpening/ one.  On noise it returned T = 0.13 and drove held-out ECE from
+   0.169 to 0.451.  The code carried a comment explaining why it was not fitted
+   on held-out -- the leak was correctly avoided and a broken alternative
+   chosen in its place.  Fixed by fitting on out-of-fold logits from within the
+   training split.
+
+2. *Fixing that moved the leak rather than removing it.*  The attention pool's
+   direction was still trained on the whole training split, so the out-of-fold
+   head scored features that had already seen the fold; =attn= alone still came
+   back with T = 0.21 and ECE 0.346 while the fixed poolings reached 0.011 and
+   0.073.  The featurizer is now refit per fold, pooling included.
+
+Both are pinned by tests that fail if the old behaviour returns, and the second
+test was mutation-checked against a deliberately broken implementation.
 
 ** P2 -- Choice and Score
 

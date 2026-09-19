@@ -10,7 +10,7 @@ by a doc landing -- these gate the work, they are not the work.
 
 | #  | Doc                                       | Status   | Effort  | Payoff                  |
 |----+-------------------------------------------+----------+---------+-------------------------|
-|  1 | [[file:01-system-one.org][System One models -- typed, calibrated, single-pass decisions]] | P0 SHIPPED | med-hi | a decision layer that cannot emit an ill-typed answer |
+|  1 | [[file:01-system-one.org][System One models -- typed, calibrated, single-pass decisions]] | P0,P1 SHIPPED | med-hi | a decision layer that cannot emit an ill-typed answer |
 
 Scope, settled 2026-09-19: *(A) spike* -- phases P0-P3 of Doc 1.  Integration
 with anvil (P4) is out of scope and needs a new decision.
