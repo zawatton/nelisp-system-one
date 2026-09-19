@@ -17,7 +17,11 @@ before repeating any vendor number.
 
 * Status
 
-Planning.  No implementation yet.
+P0 shipped 2026-09-19 -- the evaluation harness and the type gate, with the
+stubs and mutations that make both of them evidence.  =make test= runs 50
+checks.  No model exists yet: P0 deliberately builds the instruments before
+the thing they measure, because a calibration gate that reports "well
+calibrated" for a 4x-overconfident model looks exactly like one that works.
 
 Scope, settled 2026-09-19: *(A) spike*.  Done means the method demonstrably
 works at toy scale, with honest numbers including the negative ones -- phases

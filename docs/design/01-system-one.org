@@ -1,12 +1,16 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: PLANNING, scope (A) spike (settled 2026-09-19) -- nothing implemented.  This doc gates the work; it is not the work.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0 SHIPPED 2026-09-19; P1-P3 open.
 
 * Status
 
-Planning.  No code exists in this repository yet.  Every number quoted below
-that is not marked /measured here/ comes from a vendor claim or from a sibling
-repository's own test suite, and is labelled as such.
+P0 shipped 2026-09-19: the evaluation harness, the type gate, and the stubs and
+mutations that make both of them evidence rather than decoration.  No model
+exists yet, which is the point -- see the P0 entry in section 6.
+
+Numbers marked /measured/ come from this repository's own suites and can be
+reproduced with =make test=.  Every other number is a vendor claim or a sibling
+repository's result, and is labelled as such where it appears.
 
 Survey date: 2026-09-19.
 
@@ -190,18 +194,46 @@ on the stated evaluation set, to the stated ECE/.
 
 ** 4.3 The gate, and the trap in the gate
 
-Expected Calibration Error, the usual metric, is a binned statistic, and binning
-is where it goes wrong:
+/Revised 2026-09-19 against P0's measurements.  The first draft of this section
+asserted two things that turned out to be wrong in opposite directions; they are
+corrected here, with the numbers that corrected them./
 
-- With few samples per bin, ECE is *biased low* -- a random model can look
-  calibrated.  The bin count and the sample count must be reported together, or
-  the number means nothing.
-- Equal-width bins and equal-mass bins give different answers on the same
-  predictions.  Pick one, state it, never switch it mid-project.
+Expected Calibration Error is a binned statistic, so a bare ECE is not a result.
+What the binning does, measured on the P0 stubs (=test/calibration-test.el=):
 
-So the gate is: *ECE on a named held-out set, with a stated binning scheme and
-sample count, plus a reliability diagram*, and the diagram is the part a human
-reads.
+- *Too few samples per bin biases the estimate away from zero, not toward it.*
+  Per-bin accuracy is a noisy estimate of per-bin confidence, and the summand is
+  an absolute value, so the noise has nowhere to cancel.  A stub that is
+  calibrated /by construction/ scores 0.0876 at =n=100= and 0.0109 at =n=4000=
+  (mean over 6 seeds, 10 equal-width bins).  The earlier claim that scarce data
+  biases ECE /low/ was backwards.
+
+- *Too few bins biases it toward zero*, and that is where "a miscalibrated model
+  can look calibrated" actually comes from.  =nso-stub-cancelling= is
+  underconfident by 0.30 on half its inputs and overconfident by 0.30 on the
+  other half; at one bin it scores *0.0005* and at ten bins *0.2945*.  Coarse
+  bins let opposite errors cancel.
+
+- *The scheme -- equal-width against equal-mass -- often does not matter at all.*
+  When the gap keeps one sign across the whole confidence range, the absolute
+  value comes outside the weighted sum and ECE collapses to =|mean confidence -
+  mean accuracy|=, which no partition can change.  Measured on the
+  4x-overconfident stub, equal-width/10, equal-mass/10, equal-mass/20 and the
+  collapsed expression agree to 1e-9 (0.266760984).  Equal-width/50 comes out
+  higher, at 0.269090 -- not a scheme effect but the first bullet again, one bin
+  having flipped sign on noise.  So the earlier instruction to pick a scheme and
+  never switch it is not wrong, but it guards the wrong parameter: *the bin count
+  is the load-bearing one*, and both matter only where the sign of the gap
+  changes.
+
+- *No partition can report less than the global gap*, by the triangle
+  inequality.  A bin count can therefore hide miscalibration but never invent
+  it, which is the one direction in which a coarse ECE is safe to trust.
+
+So the gate is: *ECE on a named held-out set, with the bin count, the binning
+scheme and n stated beside it, plus a reliability diagram* -- and the diagram is
+the part a human reads, because it is what shows a sign change that the scalar
+has averaged away.
 
 ** 4.4 Negative control (mandatory)
 
@@ -234,7 +266,7 @@ shared state.
 Each phase states its own acceptance criterion.  A phase that cannot state one
 is not ready to start.
 
-** P0 -- harness and negative controls (no model)
+** P0 -- harness and negative controls (no model) [SHIPPED 2026-09-19]
 
 Build the evaluation harness *first*, against a stub model with known,
 hand-set probabilities.
@@ -245,6 +277,54 @@ and a stub that emits an out-of-set answer -- and the latter two come out *red*.
 
 Rationale: this is the phase most likely to be skipped and the one that decides
 whether any later number is believable.
+
+*** What shipped
+
+=lisp/nso-types.el= (the type gate), =lisp/nso-metrics.el= (ECE, reliability
+table, Brier, NLL, accuracy), =lisp/nso-stub.el= (a Park-Miller generator and
+four stubs), =test/type-gate-test.el= (22 checks) and
+=test/calibration-test.el= (28 checks).  =make test= is green; =make compile=
+is warning-free.
+
+The acceptance criterion is met and then some:
+
+| control                                     | expected | measured                        |
+|---------------------------------------------+----------+---------------------------------|
+| calibrated by construction, =n=4000=        | green    | ECE 0.0212, gate green          |
+| 4x overconfident (=T=0.25=)                 | *red*    | ECE 0.2668, gate red            |
+| 4x underconfident (=T=4.0=)                 | *red*    | ECE 0.1599, gate red            |
+| answer outside the declared option set      | *red*    | rejected                        |
+| NaN probability reaching a metric           | *signal* | signals, does not return a number |
+
+Ten more ill-typed answers are rejected by name in the type-gate suite
+(sum != 1, an undeclared option carrying probability, a declared option with
+none, an answer that is not its own distribution's argmax, confidence outside
+[0,1], cardinality 256, duplicate options, and the Noul and Score variants).
+
+*** The suites were mutation-checked
+
+A green suite that cannot go red is the failure this phase exists to prevent,
+so the suites were run against deliberately broken copies of the library in a
+scratch tree.  A type gate that accepts everything, an ECE that always returns
+0.0, and a binning function that collapses every sample into one bin each make
+the relevant suite exit non-zero; the restored copy is green again, and the
+source tree was never mutated.
+
+*** What P0 changed in this document
+
+Section 4.3 as first written got the direction of ECE's finite-sample bias
+backwards and pointed the "state your scheme" warning at the wrong parameter.
+Both are corrected there against measurements.  That correction is the return
+on building the instruments before the model: the errors were in a section that
+reads perfectly plausibly, and only the numbers found them.
+
+*** Deliberately not built
+
+The =:confidence= field is validated as a probability and otherwise left alone.
+ECE here is top-label ECE, which is a different quantity, and deciding what
+=:confidence= should mean is section 2's open design question -- P3's problem,
+not a gap in P0.
+
 
 ** P1 -- Noul, end to end
 
