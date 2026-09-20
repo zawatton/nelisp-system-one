@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Score's retained head NOT CALIBRATED under its own pre-registered rule (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
 
 * Status
 
@@ -1240,6 +1240,107 @@ land and Score ships an uncalibrated head.  That is a real possibility -- the
 ordinal head's own temperature came back at 4.24 with a gain of +1.09 against a
 band of [-0.022, +0.011], which is exactly that picture before correction.
 
+**** Result -- NOT ACCEPTED (2026-09-21)
+
+| gate | what it asks                  | verdict | figure                                  |
+|------+-------------------------------+---------+-----------------------------------------|
+|    0 | did the head converge?        | PASS    | \vert g \vert 4.92e-03 in 100 iterations            |
+|    1 | can the statistic see?        | PASS    | control clear of the band at both sizes |
+|    2 | is the corrected output calibrated? | *FAIL* | gain +0.0253 against a p95 of +0.0201  |
+
+| question                        |    gain | band              | inside? |
+|---------------------------------+---------+-------------------+---------|
+| A: was the RAW output calibrated?   | −0.0070 | [−0.0221, +0.0089] | yes     |
+| B: is the CORRECTED one? (acceptance) | +0.0253 | [−0.0950, +0.0201] | *no*    |
+
+Out-of-fold temperature T = 0.946.  Across the temperature: accuracy 0.867 →
+0.867 (exactly, as the proof requires), MAE 0.373 → 0.373, NLL 0.3544 →
+0.3614, ECE 0.0933 → 0.0948 at ten bins on n=75 -- and that last pair is *not*
+a gate, for the reason P3 gives.
+
+***** The verdict had to be re-measured before it could be believed
+
+The first reading used 400 draws to estimate the band.  The post-hoc
+diagnostic then computed the *same* band -- same sizes, same construction,
+different seed -- and returned a 95th percentile of +0.0268 where the run had
+returned +0.0160.  The observed gain is +0.0253: above one and below the
+other.  The verdict was being decided by the simulation's seed.
+
+*A statistic was compared against a threshold that had no error bar on it.*
+That is the same fault this repository keeps finding, and this time it is in
+the statistic built to replace ECE after P3 showed ECE could not be measured
+at this n.  Estimating a committed quantity more precisely is not amending the
+rule, so it was re-estimated: 12000 draws, with a bootstrap interval on the
+percentile itself.
+
+: 5th  percentile  −0.0950   95% CI [−0.0986, −0.0913]
+: 95th percentile  +0.0201   95% CI [+0.0192, +0.0213]
+
++0.0253 clears the upper end of the threshold's own interval, so the call is
+now the head's and not the simulation's.  *FAIL, robustly.*  Both 400-draw
+readings were imprecise; neither was the number.
+
+***** Two explanations were offered and both were refuted
+
+A and B disagree about the same output -- the corrected logits are the raw ones
+scaled by 0.946, which is very nearly not scaled at all.  Two mechanisms were
+proposed, each named before it was tested, and each tested in a form that could
+refute it.  Both were refuted.
+
+1. *Clustering.*  B's band draws its halves as independent examples while the
+   real halves are scenarios, and fifteen sentences sharing a subject are not
+   fifteen independent draws -- so perhaps the band was simply too narrow.
+   *No.*  All ten ways of choosing two held-out scenarios as the fit half give
+   a residual temperature between 1.10 and 1.62, every one asking to flatten,
+   and seven of the ten land above the band.  A band that models the clustering
+   explicitly, with a per-group offset swept rather than estimated, barely
+   widens.  The residual is systematic.
+2. *Cross-validated under-correction.*  Each fold head fits on about seven of
+   eleven training scenarios and the shipped head fits on all eleven; more data
+   makes a head sharper, so perhaps the fold heads simply were not yet as
+   overconfident as the shipped one.  *No, and the direction is backwards:*
+
+   | folds | scenarios per fold head | out-of-fold T |
+   |-------+-------------------------+---------------|
+   |     2 |                       6 |         1.005 |
+   |     3 |                       8 |         0.946 |
+   |     5 |                       9 |         0.736 |
+   |    11 |                      10 |         0.809 |
+
+   A temperature fitted directly on the held-out logits is 1.313.  If the
+   hypothesis held, more folds would walk toward it; they walk away from it.
+
+***** What is established, and what is not
+
+*Established.*  The pipeline Score would ship is not calibrated, and the
+failure is in the procedure rather than in the head's potential.  The
+out-of-fold temperature measured on the training split points the *opposite
+way* from the correction the held-out scenarios need -- 0.74 to 1.01 against
+1.31 -- so the calibrator is being fitted where the miscalibration is not.
+P3's recipe, which worked for Noul, does not transfer to this head on this
+data.
+
+*Not established.*  Why.  Both mechanisms offered were tested and refuted and
+the third is not in hand, so the honest state is an unexplained disagreement
+rather than a plausible story with a diagram.  Also not established: whether
+the head *could* be calibrated by a better-placed calibrator.  The direct
+held-out temperature of 1.313 exists and would clearly help, but it has seen
+the data it would be judged on, so it is a target and not a result.
+
+***** What a re-test needs, and why it is not run here
+
+Three-way scenario splits: train, calibrate, test, with the calibrator fitted
+on scenarios the head did not train on *and* the test never sees.  This dataset
+has five held-out scenarios, which is the binding constraint on every marginal
+call in this phase -- question B's fit half is two of them.
+
+Re-running gate 2 under a better temperature is not done, and the reason is
+not fastidiousness: the gate has been taken, and taking it again with a
+knowingly better instrument after seeing which way it fell is how a
+pre-registration becomes decoration.  A re-test is a new pre-registration with
+more scenarios, and it is named here as the follow-up rather than performed as
+a correction.
+
 
 ** P3 -- calibration proper
 
@@ -1731,12 +1832,16 @@ commit in the very paragraph warning about it.
   against 0.0798 on antonym pairs.  The head is least calibrated exactly where
   it is most interesting.  More data is the remedy, not a different
   calibrator.
-- *Score is built, and its architecture argument did not survive.*  §2's
-  signature is implemented and the primitive works; §3.3's cumulative-link head
-  is rejected by the rule §3.3 itself set, and the head behind Score is now the
-  plain softmax.  The retained head's *calibration* is unmeasured -- the
-  instrument this phase built is a temperature on cumulative margins and does
-  not apply to a softmax -- which is the one substantive gap Score leaves.
+- *Score is built, its architecture argument did not survive, and the head it
+  ships is not calibrated.*  §2's signature is implemented and the primitive
+  works; §3.3's cumulative-link head is rejected by the rule §3.3 itself set,
+  and the head behind Score is now the plain softmax.  That head's calibration
+  was then pre-registered and measured, and it failed: the out-of-fold
+  temperature points the opposite way from the correction the held-out
+  scenarios need, so P3's recipe does not transfer here.  Two explanations were
+  offered and both refuted, so the disagreement is recorded as unexplained.  A
+  re-test needs three-way scenario splits and more scenarios than this dataset
+  has.
 - *Nothing here says anything about Jev.*  The category is reproducible; the
   artefact is not, and no result above should be read as a comparison.
 
