@@ -40,6 +40,9 @@
 
 (message "== score ==")
 
+(defvar nso-t--dim1024-limit 0.05
+  "The same convergence limit the probe's gate 0 applies.")
+
 (defvar st--here (file-name-directory (or load-file-name buffer-file-name)))
 
 ;;; --- 1. the gradient is the gradient -------------------------------------
@@ -276,6 +279,64 @@
          (> (plist-get s :mae) (* 0.85 (plist-get base :mae)))
          (format "MAE %.3f against constant %.3f"
                  (plist-get s :mae) (plist-get base :mae))))
+
+;;; --- at the dimension the encoder actually produces ------------------------
+;;
+;; The case that was missing, and its absence cost an encode run.  Everything
+;; above fits at dim 16 and the GPU-free smoke fitted at dim 64; the encoder
+;; produces dim 1024, where a standardised feature vector has norm about 32
+;; and the fixed step of 0.5 that suits dim 16 overshoots on every iteration.
+;; The first real run came back with a gradient norm of 4.79 against a limit
+;; of 0.05 and a held-out NLL of 9.66, and its pre-registered gate 0 voided
+;; the comparison.
+;;
+;; This is the fourth time a step size chosen against synthetic data met a
+;; real scale and lost, and the third time a synthetic suite stayed green
+;; while the shipped setting failed.  The scale was matched in the smoke --
+;; RMS 4, deliberately -- and the DIMENSION was not, which is half a lesson
+;; applied.  So the suite now fits at the real dimension, with the real
+;; training-split size, and it is slow on purpose.
+
+(let* ((rng (nso-rng 1024))
+       (dim 1024) (n 165) (k 5)
+       (u (st--rand-vec rng dim 1.0))
+       (xs nil) (ys nil))
+  ;; Scale the planted direction so the latent spans the levels rather than
+  ;; sitting inside one of them.
+  (let ((s 0.0))
+    (dotimes (j dim) (setq s (+ s (* (aref u j) (aref u j)))))
+    (setq s (/ 5.2 (sqrt s)))
+    (dotimes (j dim) (aset u j (* s (aref u j)))))
+  (dotimes (_ n)
+    (let* ((x (st--rand-vec rng dim 1.0))
+           (f (nso-dot u x))
+           (lvl 0))
+      (dolist (c st--cuts) (when (> f c) (setq lvl (1+ lvl))))
+      (push x xs) (push lvl ys)))
+  (setq xs (nreverse xs) ys (nreverse ys))
+  (let* ((std (nso-standardizer xs))
+         (sx (mapcar (lambda (v) (nso-standardize std v)) xs))
+         (norm (let ((s 0.0)) (dotimes (j dim) (setq s (+ s (* (aref (car sx) j)
+                                                               (aref (car sx) j)))))
+                    (sqrt s)))
+         ;; The probe's budget, not a shorter one.  A fixture that stands in
+         ;; for the real fit has to use the real dimension AND the real step
+         ;; count: at 150 steps this head is still at |g| 6.3e-02 and would
+         ;; look like a failure, at 600 it reaches 3.0e-03.  Slow on purpose.
+         (ord (nso-score-train sx ys k 600 0.5 0.01))
+         (nom (nso-score-nominal-train sx ys k 600 0.5 0.01))
+         (start (nso-score-loss (nso-score-make dim k) sx ys 0.01)))
+    (nso-t-gt "a standardised dim-1024 feature vector has the norm that broke it"
+              norm 25.0)
+    (nso-t-lt "the ordinal head converges at dim 1024"
+              (plist-get ord :final-gnorm) nso-t--dim1024-limit)
+    (nso-t-lt "the nominal head converges at dim 1024"
+              (plist-get nom :final-gnorm) nso-t--dim1024-limit)
+    (nso-t-lt "and the ordinal loss went down rather than up"
+              (plist-get ord :final-loss) start)
+    (message "    dim 1024: |x| %.1f, ordinal |g| %.2e loss %.4f (from %.4f), nominal |g| %.2e"
+             norm (plist-get ord :final-gnorm) (plist-get ord :final-loss)
+             start (plist-get nom :final-gnorm))))
 
 ;;; --- calibration on the ordinal scale ------------------------------------
 

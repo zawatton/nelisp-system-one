@@ -240,35 +240,105 @@ assuming the answer."
       (nso-axpy dw l2 w)
       (list :dw dw :dt dt :dd dd))))
 
-(defun nso-score-train (xs ys k &optional steps lr l2)
-  "Fit an ordinal head with K levels to XS/YS by gradient descent.
+(defconst nso-score-gtol 5.0e-3
+  "Gradient norm at which a fit is finished.
 
-Returns the model with `:final-loss' and `:final-gnorm' attached.  Those are
-not decoration: this head mixes a dim-dimensional w with K-1 cutpoints on a
-single learning rate, and a fixed step that suits one need not suit the other.
-Four separate results in this repository turned out to be measurements of an
-unconverged optimiser rather than of the thing under test, every one of them
-because a step size met an input scale nobody had looked at.  A caller that
-prints an accuracy without looking at the gradient norm is set up to repeat
-that, so the number travels with the model."
+An order of magnitude inside the 0.05 that the probe's gate 0 applies, so a
+fit that stops here is comfortably inside the gate it will be judged by rather
+than resting against it.  Absolute rather than relative because the gate it
+mirrors is absolute; if that one ever moves, this moves with it.")
+
+(defconst nso-score-armijo 1.0e-4
+  "Sufficient-decrease constant for the backtracking line search.")
+
+(defun nso-score--copy (model)
+  (list :w (copy-sequence (plist-get model :w))
+        :k (plist-get model :k)
+        :t (plist-get model :t)
+        :d (copy-sequence (plist-get model :d))))
+
+(defun nso-score--gnorm2 (g)
+  (let ((s (* (plist-get g :dt) (plist-get g :dt))))
+    (dolist (part (list (plist-get g :dw) (plist-get g :dd)))
+      (dotimes (j (length part)) (setq s (+ s (* (aref part j) (aref part j))))))
+    s))
+
+(defun nso-score--descend (model base g step)
+  "Set MODEL to BASE minus STEP times G."
+  (let ((w (plist-get model :w)) (bw (plist-get base :w)) (gw (plist-get g :dw)))
+    (dotimes (j (length w)) (aset w j (- (aref bw j) (* step (aref gw j))))))
+  (let ((d (plist-get model :d)) (bd (plist-get base :d)) (gd (plist-get g :dd)))
+    (dotimes (j (length d)) (aset d j (- (aref bd j) (* step (aref gd j))))))
+  (plist-put model :t (- (plist-get base :t) (* step (plist-get g :dt)))))
+
+(defun nso-score-train (xs ys k &optional steps lr l2 tol)
+  "Fit an ordinal head with K levels to XS/YS.
+
+LR is the INITIAL trial step, not the step.  Each iteration backtracks until
+the Armijo condition holds, so the fit does not depend on LR being right for
+the data -- which is the whole reason this is a line search and not the fixed
+step it started as.
+
+That first version diverged on the real features and the design document
+records why: the suite fitted at dim 16 and the smoke at dim 64, both of which
+a step of 0.5 suits, while the encoder produces dim 1024, where a standardised
+feature vector has norm about 32 and the same step overshoots on every
+iteration.  It is the fourth time in this repository that a step size chosen
+against synthetic data met a real scale and lost, and the third time a
+synthetic suite was green while the shipped setting failed.  A search removes
+the constant rather than replacing it with a better guess.
+
+STEPS is a CAP, not a count: the fit stops as soon as the gradient norm falls
+below TOL (default `nso-score-gtol').  A fixed number of iterations is the
+same disease as a fixed step -- a constant chosen against one problem and
+carried to another -- and it cost this phase a second void run, where 600
+steps converged on synthetic ordinal data and left the real features at a
+gradient norm of 0.141 against a gate of 0.05.  Stopping on the quantity the
+gate measures, computed on the training split, is the criterion that
+transfers.
+
+Returns the model with `:final-loss', `:final-gnorm' and `:steps-taken'
+attached; a caller that reports an accuracy without reading the gradient norm
+is set up to report a measurement of its optimiser."
   (let* ((model (nso-score-make (length (car xs)) k))
          (steps (or steps 600))
-         (lr (or lr 0.5))
+         (step (or lr 0.5))
          (l2 (or l2 0.01))
+         (tol2 (let ((v (or tol nso-score-gtol))) (* v v)))
          (i 0)
+         (taken 0)
          (g nil))
     (while (< i steps)
       (setq g (nso-score-grad model xs ys l2))
-      (nso-axpy (plist-get model :w) (- lr) (plist-get g :dw))
-      (setq model (plist-put model :t (- (plist-get model :t) (* lr (plist-get g :dt)))))
-      (nso-axpy (plist-get model :d) (- lr) (plist-get g :dd))
-      (setq i (1+ i)))
-    (let ((gn 0.0))
-      (dolist (part (list (plist-get g :dw) (plist-get g :dd)))
-        (dotimes (j (length part)) (setq gn (+ gn (* (aref part j) (aref part j))))))
-      (setq gn (+ gn (* (plist-get g :dt) (plist-get g :dt))))
-      (setq model (plist-put model :final-gnorm (sqrt gn))))
+      (setq taken (1+ taken))
+      (let ((g2 (nso-score--gnorm2 g)))
+        (if (< g2 tol2)
+            (setq i steps)
+          (let ((l0 (nso-score-loss model xs ys l2))
+                (base (nso-score--copy model))
+                (tries 0)
+                (ok nil))
+            ;; Grow the trial step between iterations, so a search that had to
+            ;; shrink hard once does not stay small for the rest of the fit.
+            (setq step (* 2.0 step))
+            (while (and (not ok) (< tries 60))
+              (nso-score--descend model base g step)
+              (if (<= (nso-score-loss model xs ys l2)
+                      (- l0 (* nso-score-armijo step g2)))
+                  (setq ok t)
+                (setq step (/ step 2.0) tries (1+ tries))))
+            (unless ok
+              ;; No step along the gradient decreases the loss enough: either
+              ;; this is a minimum or the objective is flat here.  Restoring is
+              ;; the honest move -- the alternative is silently keeping an
+              ;; uphill iterate and reporting whatever it scores.
+              (nso-score--descend model base g 0.0)
+              (setq i steps))))
+        (setq i (1+ i))))
+    (setq g (nso-score-grad model xs ys l2))
+    (setq model (plist-put model :final-gnorm (sqrt (nso-score--gnorm2 g))))
     (setq model (plist-put model :final-loss (nso-score-loss model xs ys l2)))
+    (setq model (plist-put model :steps-taken taken))
     model))
 
 ;;; The nominal alternative
@@ -330,25 +400,67 @@ that, so the number travels with the model."
     (dotimes (i k) (nso-axpy (aref dw i) l2 (aref w i)))
     (list :dw dw)))
 
-(defun nso-score-nominal-train (xs ys k &optional steps lr l2)
-  "Fit a K-way softmax to XS/YS.  Same budget and signature as the ordinal head."
+(defun nso-score--nominal-gnorm2 (g)
+  (let ((s 0.0) (dw (plist-get g :dw)))
+    (dotimes (i (length dw))
+      (let ((part (aref dw i)))
+        (dotimes (c (length part)) (setq s (+ s (* (aref part c) (aref part c)))))))
+    s))
+
+(defun nso-score-nominal-train (xs ys k &optional steps lr l2 tol)
+  "Fit a K-way softmax to XS/YS.
+
+The SAME backtracking search as `nso-score-train', and that is not tidiness:
+the two heads are compared on held-out MAE, so giving one an optimiser the
+other does not have turns that comparison into a measurement of the optimiser.
+This repository has already published one result that was exactly that.
+
+Same early stop, too.  On the real features this head reaches a gradient norm
+of 5e-07 within 600 iterations and its loss does not move in the 4200 after
+that, so a larger cap costs it nothing -- which is exactly why raising the cap
+cannot be a way of buying a favourable comparison.  Only the head that has not
+converged can gain from it."
   (let* ((model (nso-score-nominal-make (length (car xs)) k))
          (steps (or steps 600))
-         (lr (or lr 0.5))
+         (step (or lr 0.5))
          (l2 (or l2 0.01))
+         (tol2 (let ((v (or tol nso-score-gtol))) (* v v)))
          (i 0)
+         (taken 0)
          (g nil))
     (while (< i steps)
       (setq g (nso-score-nominal-grad model xs ys l2))
-      (dotimes (j k) (nso-axpy (aref (plist-get model :w) j)
-                               (- lr) (aref (plist-get g :dw) j)))
-      (setq i (1+ i)))
-    (let ((gn 0.0))
-      (dotimes (j k)
-        (let ((part (aref (plist-get g :dw) j)))
-          (dotimes (c (length part)) (setq gn (+ gn (* (aref part c) (aref part c)))))))
-      (setq model (plist-put model :final-gnorm (sqrt gn))))
+      (setq taken (1+ taken))
+      (let ((g2 (nso-score--nominal-gnorm2 g)))
+        (if (< g2 tol2)
+            (setq i steps)
+          (let* ((l0 (nso-score-nominal-loss model xs ys l2))
+                 (base (let ((w (plist-get model :w))
+                             (out (make-vector k nil)))
+                         (dotimes (j k) (aset out j (copy-sequence (aref w j))))
+                         out))
+                 (tries 0)
+                 (ok nil))
+            (setq step (* 2.0 step))
+            (while (and (not ok) (< tries 60))
+              (let ((w (plist-get model :w)) (dw (plist-get g :dw)))
+                (dotimes (j k)
+                  (let ((wj (aref w j)) (bj (aref base j)) (gj (aref dw j)))
+                    (dotimes (c (length wj))
+                      (aset wj c (- (aref bj c) (* step (aref gj c))))))))
+              (if (<= (nso-score-nominal-loss model xs ys l2)
+                      (- l0 (* nso-score-armijo step g2)))
+                  (setq ok t)
+                (setq step (/ step 2.0) tries (1+ tries))))
+            (unless ok
+              (let ((w (plist-get model :w)))
+                (dotimes (j k) (aset w j (copy-sequence (aref base j)))))
+              (setq i steps))))
+        (setq i (1+ i))))
+    (setq g (nso-score-nominal-grad model xs ys l2))
+    (setq model (plist-put model :final-gnorm (sqrt (nso-score--nominal-gnorm2 g))))
     (setq model (plist-put model :final-loss (nso-score-nominal-loss model xs ys l2)))
+    (setq model (plist-put model :steps-taken taken))
     model))
 
 ;;; Ordinal metrics

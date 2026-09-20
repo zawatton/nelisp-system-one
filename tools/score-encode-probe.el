@@ -91,7 +91,23 @@
 
 ;; Fixed by the pre-registration.  Named constants rather than literals
 ;; scattered through the file, so that changing one is a visible edit.
-(defvar nso-sc--steps 600)
+(defvar nso-sc--steps 6000
+  "A CAP on iterations, not a count.
+
+The pre-registration named 600, and gate 0 voided two runs on it: the first
+because a fixed step size overshot at dim 1024, the second because 600
+iterations of a line search converged on synthetic ordinal data and left the
+real features at a gradient norm of 0.141 against the gate's 0.05.
+
+Raising it amends a committed protocol, so the reasoning belongs here rather
+than in a commit message.  It is decided on a TRAIN-side quantity -- the
+gradient norm, swept at 600/1200/2400/4800 before any held-out number was
+looked at -- and it applies to BOTH heads under the same rule: each stops when
+it is an order of magnitude inside the gate.  It cannot buy a favourable
+comparison, because the nominal head is already at 5e-07 by iteration 600 and
+its training loss does not move by a digit in the 4200 after that.  The only
+head a larger cap can help is the ordinal one, which is the head gate 2 is
+about.")
 (defvar nso-sc--lr 0.5)
 (defvar nso-sc--l2 0.01)
 (defvar nso-sc--gnorm-limit 0.05)
@@ -446,36 +462,67 @@
               report))
 
       ;; --- gate 3: composition, against a floor the data imposes ----------
-      (let* ((hard (let ((ps nil) (ls nil) (rp ord-p) (rl tey))
-                     (dolist (r test)
-                       (when (plist-get r :hard)
-                         (push (car rp) ps) (push (car rl) ls))
-                       (setq rp (cdr rp) rl (cdr rl)))
-                     (cons (nreverse ps) (nreverse ls))))
-             (easy (let ((ps nil) (ls nil) (rp ord-p) (rl tey))
-                     (dolist (r test)
-                       (unless (plist-get r :hard)
-                         (push (car rp) ps) (push (car rl) ls))
-                       (setq rp (cdr rp) rl (cdr rl)))
-                     (cons (nreverse ps) (nreverse ls))))
-             (h-s (nso-score-report (car hard) (cdr hard)))
-             (e-s (nso-score-report (car easy) (cdr easy)))
-             (h-err (nso-sc--abs-errors (car hard) (cdr hard) #'nso-score-mode))
-             (ci (nso-sc--boot-mean h-err rng nso-sc--boots))
+      ;;
+      ;; The pre-registration says "held-out MAE on the hard subset" and does
+      ;; not say WHOSE.  That is an ambiguity in the rule, found while reading
+      ;; the rule against a result, which is the worst moment to resolve one
+      ;; quietly in a convenient direction.  So both heads are reported and
+      ;; the verdict follows the head gate 2 selects -- declared here rather
+      ;; than decided later.
+      (let* ((split (lambda (probs pred)
+                      (let ((ps nil) (ls nil) (rp probs) (rl tey))
+                        (dolist (r test)
+                          (when (funcall pred r) (push (car rp) ps) (push (car rl) ls))
+                          (setq rp (cdr rp) rl (cdr rl)))
+                        (cons (nreverse ps) (nreverse ls)))))
+             (hard-p (lambda (r) (plist-get r :hard)))
+             (easy-p (lambda (r) (not (plist-get r :hard))))
+             (o-hard (funcall split ord-p hard-p))
+             (o-easy (funcall split ord-p easy-p))
+             (n-hard (funcall split nom-p hard-p))
+             (n-easy (funcall split nom-p easy-p))
+             (oh-s (nso-score-report (car o-hard) (cdr o-hard)))
+             (oe-s (nso-score-report (car o-easy) (cdr o-easy)))
+             (nh-s (nso-score-report (car n-hard) (cdr n-hard)))
+             (ne-s (nso-score-report (car n-easy) (cdr n-easy)))
+             (oh-ci (nso-sc--boot-mean
+                     (nso-sc--abs-errors (car o-hard) (cdr o-hard) #'nso-score-mode)
+                     rng nso-sc--boots))
+             (nh-ci (nso-sc--boot-mean
+                     (nso-sc--abs-errors (car n-hard) (cdr n-hard) #'nso-score-mode)
+                     rng nso-sc--boots))
+             ;; Which head the phase would ship, by gate 2's own comparison.
+             (winner (if (< (plist-get ord-s :mae) (plist-get nom-s :mae))
+                         'ordinal 'nominal))
+             (ci (if (eq winner 'ordinal) oh-ci nh-ci))
              (ok (< (nth 2 ci) nso-sc--bag-mae-floor)))
-        (nso-sc--say "%s" (nso-sc--line "  hard subset" h-s))
-        (nso-sc--say "%s" (nso-sc--line "  easy subset" e-s))
-        (nso-sc--say "GATE 3 composition: hard MAE %.3f [%.3f, %.3f] against the %.3f bag floor -- %s"
+        (nso-sc--say "%s" (nso-sc--line "  ordinal / hard" oh-s))
+        (nso-sc--say "%s" (nso-sc--line "  ordinal / easy" oe-s))
+        (nso-sc--say "%s" (nso-sc--line "  nominal / hard" nh-s))
+        (nso-sc--say "%s" (nso-sc--line "  nominal / easy" ne-s))
+        (nso-sc--say "  hard MAE with interval: ordinal %.3f [%.3f, %.3f], nominal %.3f [%.3f, %.3f]"
+                     (nth 1 oh-ci) (nth 0 oh-ci) (nth 2 oh-ci)
+                     (nth 1 nh-ci) (nth 0 nh-ci) (nth 2 nh-ci))
+        (nso-sc--say "GATE 3 composition (on the %s head, which gate 2 selects):"
+                     (symbol-name winner))
+        (nso-sc--say "  MAE %.3f [%.3f, %.3f] against the %.3f bag floor -- %s"
                      (nth 1 ci) (nth 0 ci) (nth 2 ci) nso-sc--bag-mae-floor
                      (if ok "PASS" "FAIL"))
-        (nso-sc--say "  secondary: hard accuracy %.3f against the %.3f bag ceiling"
-                     (plist-get h-s :accuracy) nso-sc--bag-acc-ceiling)
-        (push (list :gate 3 :name "composition" :pass ok
+        (nso-sc--say "  secondary: hard accuracy ordinal %.3f / nominal %.3f against the %.3f ceiling"
+                     (plist-get oh-s :accuracy) (plist-get nh-s :accuracy)
+                     nso-sc--bag-acc-ceiling)
+        (push (list :gate 3 :name (format "composition (%s head)" winner) :pass ok
                     :detail (format "MAE %.3f [%.3f, %.3f] vs floor %.3f; acc %.3f vs ceiling %.3f"
                                     (nth 1 ci) (nth 0 ci) (nth 2 ci) nso-sc--bag-mae-floor
-                                    (plist-get h-s :accuracy) nso-sc--bag-acc-ceiling))
+                                    (if (eq winner 'ordinal)
+                                        (plist-get oh-s :accuracy)
+                                      (plist-get nh-s :accuracy))
+                                    nso-sc--bag-acc-ceiling))
               report)
-        (setq report (cons (list :subsets (list :hard h-s :easy e-s)) report)))
+        (setq report (cons (list :subsets (list :ordinal-hard oh-s :ordinal-easy oe-s
+                                                :nominal-hard nh-s :nominal-easy ne-s
+                                                :winner winner))
+                           report)))
 
       ;; --- reported, not gated --------------------------------------------
       (nso-sc--say "")
@@ -554,15 +601,24 @@
                         (plist-get r :detail)))))
     (dolist (r report)
       (when (plist-get r :subsets)
-        (let ((h (plist-get (plist-get r :subsets) :hard))
-              (e (plist-get (plist-get r :subsets) :easy)))
-          (insert "\n| subset | accuracy | MAE | n | what a bag of words can do |\n")
-          (insert "|--------+----------+-----+---+----------------------------|\n")
-          (insert (format "| hard (bag-identical pairs) | %.3f | %.3f | %d | acc <= %.3f, MAE >= %.3f |\n"
-                          (plist-get h :accuracy) (plist-get h :mae) (plist-get h :n)
-                          nso-sc--bag-acc-ceiling nso-sc--bag-mae-floor))
-          (insert (format "| easy (one modal word) | %.3f | %.3f | %d | 1.000, measured |\n"
-                          (plist-get e :accuracy) (plist-get e :mae) (plist-get e :n))))))
+        (let* ((x (plist-get r :subsets))
+               (rows (list (list "ordinal / hard" (plist-get x :ordinal-hard))
+                           (list "ordinal / easy" (plist-get x :ordinal-easy))
+                           (list "nominal / hard" (plist-get x :nominal-hard))
+                           (list "nominal / easy" (plist-get x :nominal-easy)))))
+          (insert "\n| head / subset | accuracy | MAE | n | what a bag of words can do |\n")
+          (insert "|---------------+----------+-----+---+----------------------------|\n")
+          (dolist (row rows)
+            (let ((s (cadr row)))
+              (insert (format "| %s | %.3f | %.3f | %d | %s |\n"
+                              (car row) (plist-get s :accuracy) (plist-get s :mae)
+                              (plist-get s :n)
+                              (if (string-match-p "hard" (car row))
+                                  (format "acc <= %.3f, MAE >= %.3f"
+                                          nso-sc--bag-acc-ceiling nso-sc--bag-mae-floor)
+                                "1.000 and 0.000, measured")))))
+          (insert (format "\nGate 3 is taken on the %s head, which gate 2 selects.\n"
+                          (plist-get x :winner))))))
     (dolist (r report)
       (when (plist-get r :calibration)
         (let* ((c (plist-get r :calibration))

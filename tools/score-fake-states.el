@@ -27,7 +27,16 @@
 (require 'nso-stub)
 
 (defvar nso-fk--mode (or (getenv "NSO_SCORE_FAKE") "signal"))
-(defvar nso-fk--dim 64)
+(defvar nso-fk--dim 1024
+  "The dimension the encoder actually produces.
+
+Was 64, and that is how the first real run got through: the smoke matched the
+real states' SCALE -- RMS about 4, deliberately -- and not their dimension,
+where a standardised vector has norm about 32 and the fixed step of the day
+overshot every iteration.  Matching one of the two axes and calling it a
+realistic fixture is how a smoke test stays green through the failure it
+exists to catch.  Slower now, and that is the price of the fixture being the
+thing it stands in for.")
 (defvar nso-fk--seq 3)
 (defvar nso-fk--out
   (or (getenv "NSO_SCORE_STATES")

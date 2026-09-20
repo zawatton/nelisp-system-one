@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Spike CLOSED 2026-09-20 -- see §10.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
 
 * Status
 
@@ -201,6 +201,33 @@ down.
 
 P2 must show this beats the plain softmax on an ordinal task, or drop it.  A
 mechanism that costs complexity and buys nothing measurable does not ship.
+
+*Measured 2026-09-21, and dropped.*  On the held-out split of
+=data/score-commitment.eld=, with both heads converged and fitted on identical
+features under identical rules, the cumulative-link head is *worse*: MAE 0.733
+against the nominal softmax's 0.373, a paired bootstrap difference of −0.360
+with a 95% interval of [−0.560, −0.147] that excludes zero in the softmax's
+favour.  The argument above is not wrong about what ordering *is*; it is wrong
+about what it *buys here*.
+
+Two readings survive the result and one does not:
+
+- What dies is the parameter argument.  The ordinal head's economy -- one
+  shared direction plus K−1 cutpoints, 1028 parameters against 5120 -- is
+  exactly what costs it.  Five levels of epistemic commitment are apparently
+  not one direction in this encoder's space with four thresholds on it, and
+  forcing them onto one loses more than the extra parameters cost.
+- What survives is that the *task* is ordinal, which is why MAE is the metric
+  the comparison is made on at all.  A nominal head that happened to be right
+  and wrong at random would show it here; this one does not, and its errors are
+  mostly to an adjacent level.
+
+The honest scope: this is one encoder, one dataset of 240 template-regular
+sentences, and n=75 held out.  It refutes the claim *as this section made it*
+-- that the cumulative-link form should be preferred -- and does not establish
+that ordinal heads are useless in general.  Section 2's =nso-score= signature is
+unaffected: Score still returns a distribution over ordered levels, and the
+head behind it is now the nominal one.
 
 * 4. Calibration -- the actual work
 
@@ -1003,6 +1030,130 @@ Reported, and explicitly *not* gates:
 - The easy subset, from which nothing is claimed: a unigram nominal head
   already scores 1.000 on it.
 
+**** Result -- 240 examples encoded, judged 2026-09-21
+
+Encoded in 70 minutes: 240 prompts, mean 15 tokens, mid layer 13, last-token
+pooling.  The probe ran three times and only the third is a result; the first
+two are below, because what they cost is the more useful part of this phase.
+
+***** The gates
+
+| gate | what it asks                            | verdict | figure                                        |
+|------+-----------------------------------------+---------+-----------------------------------------------|
+|    0 | did both heads converge?                | PASS    | ordinal \vert g \vert 4.99e-03, nominal 4.92e-03            |
+|    1 | does it score without labels?           | PASS    | shuffled: acc 0.240 vs chance 0.200, MAE 1.333 |
+|    2 | does the ordering earn its keep?        | *FAIL*  | MAE difference −0.360 [−0.560, −0.147]         |
+|    3 | is it reading word order, not words?    | PASS    | hard MAE 0.520 [0.240, 0.880] vs a 1.200 floor |
+
+Gate 2 fails in the direction the pre-registration named: the interval excludes
+zero *in the nominal head's favour*, so "the ordinal head is dropped and §3.3
+is rewritten".  §3.3 is rewritten.
+
+***** Held-out, 75 examples over five unseen scenarios
+
+| head             | accuracy | 95% CI        | MAE (mode) | MAE (median) |   NLL |
+|------------------+----------+---------------+------------+--------------+-------|
+| nominal softmax  |    0.867 | [0.772,0.926] |      0.373 |        0.360 | 0.354 |
+| ordinal (§3.3)   |    0.400 | [0.297,0.513] |      0.733 |        0.733 | 2.400 |
+| chance           |    0.200 | --            |      1.200 |           -- |    -- |
+
+***** The subsets, against what a bag of words can reach
+
+The hard half is built from pairs whose word *sets* are identical, so a model
+that cannot see word order must answer both members alike.  That bounds any
+bag-of-words model at 0.600 accuracy and 1.200 MAE there -- measured, and tight:
+a five-way softmax on unigrams reaches exactly 0.600 and 1.200.
+
+| head / subset  | accuracy |   MAE |  n | bag-of-words bound      |
+|----------------+----------+-------+----+-------------------------|
+| nominal / hard |    0.820 | 0.520 | 50 | acc ≤ 0.600, MAE ≥ 1.200 |
+| nominal / easy |    0.960 | 0.080 | 25 | 1.000 and 0.000         |
+| ordinal / hard |    0.400 | 0.780 | 50 | acc ≤ 0.600, MAE ≥ 1.200 |
+| ordinal / easy |    0.400 | 0.640 | 25 | 1.000 and 0.000         |
+
+*This is the load-bearing row.*  0.820 on the hard subset is above a ceiling no
+bag of words can reach, by a margin whose interval clears it, and 0.520 MAE is
+less than half the floor.  "I do not doubt that the shipment will arrive today"
+and "I do not doubt that the shipment will not arrive today" contain the same
+words and sit at opposite ends of the scale; a frozen Qwen3-0.6B, pooled at the
+last token of layer 13, separates them.  Nothing in the easy half could have
+shown that, which is why nothing is claimed from it.
+
+***** Reported, not gated
+
+- *Calibration.*  T = 4.239 fitted out of fold, NLL 2.4003 → 1.3128, a gain of
+  +1.0875 against a calibrated-by-construction band of [−0.0222, +0.0113].  Far
+  outside: the raw output was badly overconfident.  The 4x-overconfident control
+  separated, so the statistic can see.
+  *This measures the head that was dropped.*  The pre-registration fixed the
+  ordinal head as the subject and the instrument built for it -- a temperature
+  on cumulative margins -- does not apply to a softmax.  The retained head's
+  calibration is therefore *not measured here*, and rather than add an
+  unregistered measurement after seeing which head won, it is named as the open
+  item it is.
+- *The ordinal temperature moved answers*, as the defect above predicts:
+  accuracy 0.400 → 0.440 and MAE 0.733 → 0.840 across T = 4.24.  A binary
+  temperature cannot do either.
+- *Unimodality*: 100% of held-out distributions.  Not guaranteed by the
+  parameterisation, and it held anyway.
+- *Readout*: MAE 0.733 under the mode and 0.733 under the median.  §2's argmax
+  contract costs Score nothing on this data, which is a measurement rather than
+  a reprieve -- the two readouts agreed, they were not shown to be equivalent.
+
+***** Two void runs, and what they were worth
+
+Gate 0 voided the first two probes.  Both times it was a constant chosen against
+synthetic data meeting a real scale, and both times the gate caught it before
+any comparison was read.
+
+| run | what broke                              | ordinal \vert g \vert | held-out MAE |
+|-----+-----------------------------------------+-------------+--------------|
+|   1 | fixed step 0.5 overshoots at dim 1024   | 4.79        | 1.147        |
+|   2 | 600 iterations is not convergence here  | 0.141       | 0.867        |
+|   3 | line search, stop on the gradient norm  | 4.99e-03    | 0.733        |
+
+The suite fitted at dim 16 and the GPU-free smoke at dim 64; the encoder
+produces dim 1024, where a standardised feature vector has norm 31 and a step
+of 0.5 overshoots every iteration.  The smoke had deliberately matched the real
+states' *scale* -- RMS 4, with a comment explaining why -- and not their
+*dimension*: half a lesson applied is how a fixture stays green through the
+failure it exists to catch.  That is the fourth time here that a constant
+chosen on synthetic data lost to a real scale, and the third time a green suite
+sat above a broken shipped setting.
+
+The fixes were to remove the constants rather than re-choose them.  Both heads
+now use the same Armijo backtracking line search, so the fit does not depend on
+the step being right, and both stop when the gradient norm falls an order of
+magnitude inside gate 0 rather than after a fixed number of iterations.  The
+iteration cap rose from 600 to 6000, which amends a committed protocol, so:
+the budget was chosen by sweeping the *training* gradient norm at
+600/1200/2400/4800 before any held-out number was read, it applies to both
+heads under one rule, and it cannot buy a favourable gate 2 -- the nominal head
+is at 5e-07 by iteration 600 and its training loss does not move by a digit in
+the 4200 after that, so the only head a larger cap can help is the ordinal one,
+which is the head gate 2 is about.
+
+Note what the two void runs did *not* do: they did not produce a number that
+went into a table.  Run 1's ordinal head scored 0.307 and run 2's scored 0.360,
+and neither is quoted as a result anywhere above.  That is the entire purpose of
+putting a convergence check before the comparison rather than after it.
+
+***** Verdict
+
+*Score is accepted as a primitive and the head §3.3 specified is rejected.*
+
+- The frozen donor supports Score well: 0.867 held-out against a 0.200 chance
+  baseline, on five unseen scenarios.
+- It does so compositionally: 0.820 on a subset where no bag of words can pass
+  0.600, with 0.960 on the lexical half that proves nothing.
+- The cumulative-link head loses to a plain softmax by 0.360 MAE with the
+  interval excluding zero, so it is dropped -- an outcome §7's risk table
+  pre-authorised ("P2 may drop it") and which is recorded rather than retried.
+
+What this does not establish: anything about deployment, anything about messy
+input, and the retained head's calibration, which is named above as an open
+item rather than quietly borrowed from the head that was dropped.
+
 
 ** P3 -- calibration proper
 
@@ -1392,6 +1543,9 @@ and nothing here walked it back.
 | P1    | words, or composition?                         | composition -- 0.792 on compositional pairs where bag-of-words scores 0.507  |
 | P2    | does the same encoder support Choice?          | not accepted -- 0.375 on held-out topics, 0.25 chance                        |
 | P3    | is the head calibrated?                        | accepted -- corrected output inside the calibrated band, control separated   |
+| Score | does a frozen donor support an ordinal scale?  | yes -- 0.867 held-out against a 0.200 chance baseline                       |
+| Score | word order, or word identity?                  | order -- 0.820 where no bag of words can pass 0.600                         |
+| Score | does §3.3's cumulative-link head earn its keep? | no -- it loses to a plain softmax by 0.360 MAE, interval excluding zero     |
 
 The compositional number is the load-bearing one.  =failed to lose= and
 =failed to win= share every content word; a model scoring 0.792 on that subset
@@ -1460,10 +1614,18 @@ worth the build complexity for a spike).
 Three patterns recurred in this spike's own process.  They are recorded
 because they are the part of the work that transfers:
 
-1. *Synthetic tests hid real-scale failures* (three times).  Every suite here
-   now carries at least one case at real scale or with real geometry.
-2. *Fixed step sizes lost to input scale* (four times).  An optimiser handed
-   features it did not standardise is measuring the features, not the method.
+1. *Synthetic tests hid real-scale failures* (four times, the last in Score).
+   Every suite here now carries at least one case at real scale or with real
+   geometry -- and Score showed that "real scale" has more than one axis: its
+   smoke matched the states' magnitude, deliberately and with a comment saying
+   why, while fitting at dim 64 against a real dim of 1024.  Half a lesson
+   applied is how a fixture stays green through the failure it exists to catch.
+2. *Fixed constants lost to a scale nobody checked* (five times).  It was
+   always a step size until Score, where the step was fixed and the ITERATION
+   COUNT was too: 600 iterations converged on synthetic ordinal data and left
+   the real features at a gradient norm of 0.141 against a gate of 0.05.  The
+   fix that works is not a better constant but no constant -- a line search for
+   the step, a convergence criterion for the count.
 3. *A check firing is not the check measuring the right quantity* (twice).
    The timing guard had a negative control and the control passed -- which
    confirmed the check fires below its threshold, not that timing was the
@@ -1483,7 +1645,12 @@ commit in the very paragraph warning about it.
   against 0.0798 on antonym pairs.  The head is least calibrated exactly where
   it is most interesting.  More data is the remedy, not a different
   calibrator.
-- *Score was never built.*  §2's ordinal signature stands unimplemented.
+- *Score is built, and its architecture argument did not survive.*  §2's
+  signature is implemented and the primitive works; §3.3's cumulative-link head
+  is rejected by the rule §3.3 itself set, and the head behind Score is now the
+  plain softmax.  The retained head's *calibration* is unmeasured -- the
+  instrument this phase built is a temperature on cumulative margins and does
+  not apply to a softmax -- which is the one substantive gap Score leaves.
 - *Nothing here says anything about Jev.*  The category is reproducible; the
   artefact is not, and no result above should be read as a comparison.
 
