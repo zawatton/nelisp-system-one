@@ -53,40 +53,50 @@
       (let* ((wts (nl-llm-weights-open nso-eq--table))
              (cfg (nl-llm-weights-config wts))
              (dim (plist-get cfg :dim))
-             (seq 5)
+             ;; A sweep, not one length.  The single seq-5 case passed while
+             ;; the P2 encode died at seq 14 with an index of exactly
+             ;; seq*ff -- one past the end of the FFN buffer.  A batched path
+             ;; is all strides and offsets, and those are what a single
+             ;; length cannot exercise.
+             (seqs (list 1 2 5 13 14 16))
              (lay (nl-llm-wgpu-load-layer wts 0))
-             ;; Deterministic input, spread over a plausible activation range.
-             (x (let ((v (make-vector (* seq dim) 0.0)))
-                  (dotimes (n (* seq dim))
-                    (aset v n (* 0.37 (- (mod (* (1+ n) 7919) 211) 105))))
-                  v)))
+)
         (unwind-protect
-            (let* ((t0 (float-time))
-                   (slow (nl-llm-wgpu-block lay (copy-sequence x) seq cfg))
-                   (t1 (float-time))
-                   (fast (nso-encode-block lay (copy-sequence x) seq cfg))
-                   (t2 (float-time))
-                   (diffs 0)
-                   (worst 0.0)
-                   (nan 0))
-              (nso-t "both paths return the same shape"
-                     (= (length slow) (length fast)))
-              (dotimes (n (min (length slow) (length fast)))
-                (let ((a (aref slow n)) (b (aref fast n)))
-                  (when (or (/= a a) (/= b b)) (setq nan (1+ nan)))
-                  (unless (= a b)
-                    (setq diffs (1+ diffs))
-                    (setq worst (max worst (abs (- a b)))))))
-              (message "  slow %.2fs, fast %.2fs, speedup %.1fx"
-                       (- t1 t0) (- t2 t1) (/ (- t1 t0) (max 1e-9 (- t2 t1))))
-              (message "  elements differing: %d of %d (worst %g), NaN %d"
-                       diffs (length slow) worst nan)
-              (nso-t "no NaN on either side" (= 0 nan))
-              (nso-t "every element is bit-identical" (= 0 diffs))
-              ;; The point of the change.  A fast path that is not faster is a
-              ;; complication, so this is a check and not a note.
-              (nso-t-lt "and the batched path is actually faster"
-                        (- t2 t1) (* 0.8 (- t1 t0))))
+            (let ((total-slow 0.0) (total-fast 0.0))
+              (dolist (seq seqs)
+                (let* ((x (let ((v (make-vector (* seq dim) 0.0)))
+                            (dotimes (n (* seq dim))
+                              (aset v n (* 0.37 (- (mod (* (1+ n) 7919) 211) 105))))
+                            v))
+                       (t0 (float-time))
+                       (slow (nl-llm-wgpu-block lay (copy-sequence x) seq cfg))
+                       (t1 (float-time))
+                       (fast (condition-case err
+                                 (nso-encode-block lay (copy-sequence x) seq cfg)
+                               (error (list :error (error-message-string err)))))
+                       (t2 (float-time))
+                       (diffs 0) (worst 0.0) (nan 0))
+                  (setq total-slow (+ total-slow (- t1 t0))
+                        total-fast (+ total-fast (- t2 t1)))
+                  (if (and (consp fast) (eq (car fast) :error))
+                      (nso-t (format "seq %d: the batched path runs at all" seq)
+                             nil (nth 1 fast))
+                    (nso-t (format "seq %d: same shape" seq)
+                           (= (length slow) (length fast)))
+                    (dotimes (n (min (length slow) (length fast)))
+                      (let ((a (aref slow n)) (b (aref fast n)))
+                        (when (or (/= a a) (/= b b)) (setq nan (1+ nan)))
+                        (unless (= a b)
+                          (setq diffs (1+ diffs))
+                          (setq worst (max worst (abs (- a b)))))))
+                    (nso-t (format "seq %d: no NaN" seq) (= 0 nan))
+                    (nso-t (format "seq %d: bit-identical (%d/%d differ, worst %g)"
+                                   seq diffs (length slow) worst)
+                           (= 0 diffs)))))
+              (message "  slow %.2fs, fast %.2fs over %d lengths"
+                       total-slow total-fast (length seqs))
+              (nso-t-lt "and the batched path is faster overall"
+                        total-fast (* 0.8 total-slow)))
           (nl-llm-wgpu-free-layer lay)))
     (nelisp-gpu-server-stop))
   (nso-t-done "encode equivalence")))

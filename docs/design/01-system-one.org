@@ -681,6 +681,10 @@ the acceptance criterion.
 | held-out topics        | 48 |       4 |    0.104 | [0.045,0.222] |  0.250 |
 | held-out vs all topics | 48 |      12 |    0.042 | [0.012,0.140] |  0.083 |
 
+Those are the *label* option embeddings.  Replacing them with descriptions
+moves held-out from below chance to chance and no further; the table is in
+"Descriptions instead of labels" below.
+
 *** What the first numbers were, and why they were not an answer
 
 The first run reported 0.250 held out on four options -- exactly chance -- and
@@ -737,6 +741,65 @@ Freezing =c= at zero (=NSO_P2_FREEZE_C=, an ablation now in
 `nso-choice-train') changes nothing: held-out stays at 0.104 either way.  The
 hypothesis is refuted and the below-chance behaviour comes from the gate
 itself.
+
+*** Descriptions instead of labels: the gap closes, the transfer does not
+
+The diagnosis above named the two-word option label as the suspect: pooling
+"weather forecast" and a ten-word request through the same causal encoder and
+expecting a shared geometry was an assumption.  Each topic now also carries a
+=:description= of eight to twelve words, in the register of a request, and
+both forms are encoded so either can be selected (=NSO_P2_OPTION=) from one
+states file.
+
+The geometry moved, and by most of the distance:
+
+| option form  | mean pairwise cosine |
+|--------------+----------------------|
+| labels       |                0.683 |
+| descriptions |                0.844 |
+| (states)     |                0.923 |
+
+And the pathology went with it:
+
+| evaluation             | labels | descriptions | chance |
+|------------------------+--------+--------------+--------|
+| seen topics, training  |  0.385 |        0.344 |  0.125 |
+| held-out topics        |  0.104 |    *0.229*   |  0.250 |
+| held-out vs all topics |  0.042 |        0.042 |  0.083 |
+
+Held-out accuracy was *below* chance with labels and is *at* chance with
+descriptions -- 0.229 with an interval of [0.133, 0.365], which contains
+0.250.  The systematic anti-correlation is gone.  Transfer is not there.
+
+So the distributional mismatch was real and it was not the binding
+constraint.  With the geometry largely matched, a diagonal bilinear form still
+cannot read topic identity out of these pooled states.  That is a sharper
+statement of the P2 result than the label run supported, and it rules out the
+cheapest of the three remedies listed below; the other two -- more than
+diagonal capacity, and whitening rather than per-axis standardisation -- are
+untouched.
+
+*** A guard that measured the wrong thing
+
+The encode for this run failed once, and the response was a guard that refused
+any resident load faster than twenty seconds, on the reasoning that 568 MiB
+cannot upload in two.  It had a negative control and the control passed.  It
+was still wrong: it blocked the next legitimate run, and checking properly --
+one layer's GPU block against `nl-llm-wgpu-block-cpu', which reads the weights
+on the host -- showed the handles were correct to a relative 4e-9 after a
+load of one second.  Page cache, not a broken upload.
+
+The negative control had confirmed that the check fires below its threshold.
+It could not confirm that the threshold stood for anything, because *timing
+was a proxy*.  What the run needs to know is whether the handles compute the
+weights, so that is what `nso-encode-check-layer' now asks, once per run, for
+a few seconds.  Speed is no longer consulted in either direction.
+
+The original failure remains unattributed: it did not recur, and a standalone
+repro of the same layer at the same sequence length passes.  It is not claimed
+as fixed.  What changed is that a run whose handles are not backed by the
+weights now stops at the first layer instead of dying minutes later with an
+index error in the FFN path.
 
 *** What this does and does not establish
 

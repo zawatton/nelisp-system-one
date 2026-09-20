@@ -197,6 +197,9 @@ Examples already present in the states file are reused rather than re-encoded."
                          (1+ ly) nlayers (- (float-time) t0))))
         (setq layers (nreverse layers))
         (nso-p1--say "resident load: %.0fs for %d layers" (- (float-time) t0) nlayers)
+        (when todo
+          (nso-p1--say "layer 0 against the CPU reference: rel %g"
+                       (nso-encode-check-layer wts 0 (car layers) cfg)))
         (unwind-protect
             (let ((rows nil) (i 0) (n (length todo)) (t1 (float-time)))
               (dolist (pair todo)

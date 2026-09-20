@@ -94,6 +94,49 @@ the symptom.  Checking first turns a wasted resident load into one line."
              free nso-encode-vram-needed-mib))
     free))
 
+(defconst nso-encode-handle-check-tolerance 1.0e-4
+  "Largest relative difference allowed between the GPU block and its CPU
+reference before a loaded layer is called unusable.")
+
+(defun nso-encode-check-layer (wts layer lay cfg)
+  "Verify that LAY's resident handles actually compute LAYER.
+
+A P2 run reported its whole model \"loaded\" in two seconds and then died
+several items later with an out-of-range index deep in the FFN path, and a
+standalone repro of the same layer and sequence length passed.  The handles in
+that run cannot have been backed by anything.
+
+The first version of this guard timed the load and refused anything faster
+than twenty seconds.  That was a proxy, and measuring it showed the proxy was
+wrong: a single layer loads in 3.7s here and its block agrees with the CPU
+reference to a relative 4e-9, so speed alone proves nothing either way.  What
+is actually wanted is whether the handles compute the right numbers, so that
+is what this asks -- one block against `nl-llm-wgpu-block-cpu', which reads
+the weights on the host and never touches a handle.
+
+Costs one block, a few seconds, once per run."
+  (let* ((dim (plist-get cfg :dim))
+         (seq 2)
+         (x (let ((v (make-vector (* seq dim) 0.0)))
+              (dotimes (n (* seq dim))
+                (aset v n (* 0.37 (- (mod (* (1+ n) 7919) 211) 105))))
+              v))
+         (gpu (nl-llm-wgpu-block lay (copy-sequence x) seq cfg))
+         (cpu (nl-llm-wgpu-block-cpu wts layer (copy-sequence x) seq cfg))
+         (worst 0.0) (scale 0.0) (nan 0))
+    (dotimes (n (min (length gpu) (length cpu)))
+      (let ((a (aref gpu n)) (b (aref cpu n)))
+        (when (or (/= a a) (/= b b)) (setq nan (1+ nan)))
+        (setq scale (max scale (abs b))
+              worst (max worst (abs (- a b))))))
+    (let ((rel (/ worst (max 1.0e-9 scale))))
+      (when (or (> nan 0) (> rel nso-encode-handle-check-tolerance))
+        (error (concat "nso-encode: layer %d on the GPU disagrees with the CPU "
+                       "reference (relative %g, %d NaN) -- its resident handles "
+                       "are not backed by the weights")
+               layer rel nan))
+      rel)))
+
 (defun nso-encode--gather (src seq width fn)
   "Build a SEQ x WIDTH buffer by calling FN with each position index.
 FN returns that position's WIDTH-long vector."

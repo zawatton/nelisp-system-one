@@ -19,6 +19,15 @@
 ;; would let a probe match strings and would make the transfer result mean
 ;; nothing.
 ;;
+;; Each topic also carries a :description -- a sentence of about the same
+;; length and register as a request.  P2's first attempt pooled the two-word
+;; :name as the option embedding and the head could not align it with the
+;; request states: option embeddings averaged pairwise cosine 0.683 while the
+;; states averaged 0.923, and a diagonal bilinear form had nothing to work
+;; with.  Pooling a two-word label and a ten-word request through the same
+;; causal encoder and expecting them to land in a shared geometry was an
+;; assumption; the descriptions are the direct test of it.
+;;
 ;; Requests are the kind of thing an intent router sees, which is also the
 ;; shape of the eventual anvil use in section 6's P4 -- though P4 remains out
 ;; of scope and nothing here is evidence about it.
@@ -26,18 +35,18 @@
 (:question "Which topic is this request about?"
  :template "%s Topic:"
  :topics
- [(:name "weather forecast" :held nil)
-  (:name "cooking recipe"   :held nil)
-  (:name "car maintenance"  :held nil)
-  (:name "medical symptom"  :held t)
-  (:name "travel booking"   :held nil)
-  (:name "software bug"     :held nil)
-  (:name "legal question"   :held t)
-  (:name "personal finance" :held nil)
-  (:name "gardening advice" :held t)
-  (:name "pet care"         :held nil)
-  (:name "home repair"      :held nil)
-  (:name "fitness training" :held t)]
+ [(:name "weather forecast" :held nil :description "What the weather will do: rain, wind, temperature and storms.")
+  (:name "cooking recipe"   :held nil :description "Preparing food: ingredients, baking times, and what went wrong in the kitchen.")
+  (:name "car maintenance"  :held nil :description "Keeping a vehicle running: brakes, engine, tyres and servicing.")
+  (:name "medical symptom"  :held t :description "Something wrong with the body: pain, swelling, fever or dizziness.")
+  (:name "travel booking"   :held nil :description "Arranging a journey: flights, hotels, tickets and cancellations.")
+  (:name "software bug"     :held nil :description "A program behaving wrongly: crashes, errors and broken features.")
+  (:name "legal question"   :held t :description "Rights and obligations: contracts, liability, claims and deadlines.")
+  (:name "personal finance" :held nil :description "Money matters: loans, savings, accounts, payments and rates.")
+  (:name "gardening advice" :held t :description "Growing plants outdoors: soil, pruning, pests and planting times.")
+  (:name "pet care"         :held nil :description "Looking after animals at home: feeding, health and behaviour.")
+  (:name "home repair"      :held nil :description "Fixing a house: leaks, damp, heating, windows and plumbing.")
+  (:name "fitness training" :held t :description "Exercise and physical conditioning: running, lifting, recovery and progress.")]
  :examples
  [
   (:topic "weather forecast" :text "Will it rain here tomorrow afternoon?")

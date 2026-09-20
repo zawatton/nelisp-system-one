@@ -61,11 +61,29 @@
 ;; Sentences go through the template; topic names are encoded bare, because an
 ;; option is a label rather than a request.
 
+(defvar nso-p2--option-form (or (getenv "NSO_P2_OPTION") "description")
+  "Which text stands for an option: `label' or `description'.
+Both are encoded, so the two can be compared from one states file without
+paying for the encoder twice.")
+
+(defun nso-p2--option-text (name)
+  "The text whose embedding represents the option NAME."
+  (if (equal nso-p2--option-form "label")
+      name
+    (let (res)
+      (dolist (tp (nso-p2--topics))
+        (when (equal name (plist-get tp :name))
+          (setq res (or (plist-get tp :description) name))))
+      res)))
+
 (defun nso-p2--items ()
   "Every text to encode, as (KIND NAME TEXT)."
   (let ((tmpl (plist-get nso-p2--data :template)) (out nil))
     (dolist (tp (nso-p2--topics))
-      (push (list 'option (plist-get tp :name) (plist-get tp :name)) out))
+      ;; Both forms, so a run can switch between them without re-encoding.
+      (push (list 'option (plist-get tp :name) (plist-get tp :name)) out)
+      (when (plist-get tp :description)
+        (push (list 'option (plist-get tp :name) (plist-get tp :description)) out)))
     (dolist (e (nso-p2--examples))
       (push (list 'state (plist-get e :topic) (format tmpl (plist-get e :text))) out))
     (nreverse out)))
@@ -125,6 +143,8 @@
                              (- (float-time) t0))))
             (setq layers (nreverse layers))
             (nso-p2--say "resident load: %.0fs" (- (float-time) t0))
+            (nso-p2--say "layer 0 against the CPU reference: rel %g"
+                         (nso-encode-check-layer wts 0 (car layers) cfg))
             (unwind-protect
                 (let ((rows nil) (i 0) (n (length todo)) (t1 (float-time)))
                   (dolist (it todo)
@@ -191,15 +211,21 @@
          (std (nso-standardizer
                (let (o)
                  (dolist (r rows)
-                   (when (or (eq (plist-get r :kind) 'option)
-                             (not (nso-p2--held-p (plist-get r :topic))))
+                   (when (or (and (eq (plist-get r :kind) 'option)
+                                  ;; only the form actually in use
+                                  (equal (plist-get r :text)
+                                         (nso-p2--option-text (plist-get r :topic))))
+                             (and (eq (plist-get r :kind) 'state)
+                                  (not (nso-p2--held-p (plist-get r :topic)))))
                      (push (funcall raw-pool r) o)))
                  (nreverse o))))
          (pool (lambda (r) (nso-standardize std (funcall raw-pool r))))
-         (opt (lambda (name) (funcall pool (gethash name by-text))))
+         (opt (lambda (name)
+                (funcall pool (gethash (nso-p2--option-text name) by-text))))
          (tmpl (plist-get nso-p2--data :template))
          (seen nil) (held nil))
-    (nso-p2--say "states standardised; statistics from the fitted rows only")
+    (nso-p2--say "option form: %s; states standardised from fitted rows only"
+                 nso-p2--option-form)
     (dolist (tp (nso-p2--topics))
       (if (plist-get tp :held)
           (push (plist-get tp :name) held)
