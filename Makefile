@@ -9,7 +9,7 @@ NELISP ?= ../nelisp/target/nelisp
 
 LOAD = -L lisp -L $(PHOTON) -L $(LLM)
 
-.PHONY: test compile clean p1
+.PHONY: test compile clean p1 score
 
 # Everything runs byte-compiled, and that is a performance decision rather
 # than a tidiness one.  The numeric loops in lisp/ are interpreted when Emacs
@@ -41,6 +41,13 @@ compile:
 # suites do; NSO_P1_STAGE selects tokenize / encode / probe / all.
 p1: compile
 	$(EMACS) -Q --batch $(LOAD) -l tools/p1-encode-probe.el
+
+# The Score encode-and-probe run.  Goes through compile for the same reason
+# p1 does; NSO_SCORE_STAGE selects tokenize / encode / probe / all.  The probe
+# path is exercised without a GPU by tools/score-fake-states.el, in both the
+# signal and the noise mode, which is what says it can report a failure.
+score: compile
+	$(EMACS) -Q --batch -L build/elc $(LOAD) -l tools/score-encode-probe.el
 
 clean:
 	rm -f lisp/*.elc test/*.elc

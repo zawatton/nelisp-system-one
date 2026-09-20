@@ -329,6 +329,46 @@
            (/= (funcall at 1.0) (funcall at 5.0))
            "the binary one cannot; runs must report accuracy on both sides")))
 
+;;; --- out-of-fold margins ------------------------------------------------
+;;
+;; The reason this exists is P1's: a temperature fitted on margins the head has
+;; already separated comes back sharpening a model that is about to meet data
+;; it has not seen.  On noise features with random labels the head memorises
+;; the training split, so an in-fold temperature wants MORE confidence and an
+;; out-of-fold one wants less.  The gap between them is the leak, and this
+;; measures it rather than asserting the fix works.
+
+(let* ((rng (nso-rng 31337))
+       (dim 40) (k 5) (ngroups 15)
+       (items nil) (ys nil) (groups nil))
+  (dotimes (g ngroups)
+    (dotimes (_ 3)
+      (push (st--rand-vec rng dim 1.0) items)
+      (push (mod (nso-rng-next rng) k) ys)
+      (push (1+ g) groups)))
+  (setq items (nreverse items) ys (nreverse ys) groups (nreverse groups))
+  (let* ((feat (lambda (_a _b) #'identity))
+         (oof (nso-score-oof-margins items ys groups feat k 3 400 0.5 0.01))
+         (std (nso-standardizer items))
+         (head (nso-score-train (mapcar (lambda (v) (nso-standardize std v)) items)
+                                ys k 400 0.5 0.01))
+         (infold (mapcar (lambda (v) (nso-score-margins head (nso-standardize std v)))
+                         items))
+         (t-oof (plist-get (nso-score-temperature-fit oof ys) :temperature))
+         (t-in (plist-get (nso-score-temperature-fit infold ys) :temperature)))
+    (nso-t-num "out-of-fold margins come back one per item"
+               (length oof) (length items) 0.5)
+    (nso-t "each is a K-1 vector, increasing"
+           (let ((ok t))
+             (dolist (z oof)
+               (unless (= (length z) (1- k)) (setq ok nil))
+               (dotimes (j (- k 2))
+                 (unless (< (aref z j) (aref z (1+ j))) (setq ok nil))))
+             ok))
+    (nso-t-gt "and they need a flatter temperature than the in-fold ones"
+              t-oof t-in)
+    (message "    T out-of-fold %.2f against in-fold %.2f" t-oof t-in)))
+
 ;;; --- the typed answer -----------------------------------------------------
 
 (let* ((levels '("ruled out" "unlikely" "uncertain" "likely" "certain"))

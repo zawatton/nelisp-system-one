@@ -42,6 +42,7 @@
 
 (require 'nso-head)
 (require 'nso-metrics)
+(require 'nso-probe)
 
 (defconst nso-score-softplus-linear 30.0
   "Above this, softplus is its own argument to within a float's resolution.")
@@ -485,6 +486,51 @@ commentary above.  Callers report accuracy before and after."
             :bounds (cons lo0 hi0)
             :nll-before (nso-score-temperature-nll margins ys 1.0)
             :nll-after (nso-score-temperature-nll margins ys temp)))))
+
+(defun nso-score-oof-margins (items ys groups featurizer k
+                                    &optional folds steps lr l2)
+  "Out-of-fold margins for ITEMS/YS, folded by GROUPS so no group scores itself.
+
+The ordinal counterpart of `nso-probe-oof-logits', and it exists for the same
+reason: a temperature fitted on the training margins is fitted on margins the
+head has already separated, and it comes back sharpening.  P1 made that
+mistake and then made a second one -- refitting the head per fold while
+leaving the feature map fitted on all of train -- so FEATURIZER is called per
+fold here too, and the standardiser is built inside the fold.
+
+Returns a list of margin vectors aligned with ITEMS."
+  (let* ((ngroups (let ((h (make-hash-table :test 'equal)))
+                    (dolist (g groups) (puthash g t h))
+                    (hash-table-count h)))
+         (folds (max 2 (min (or folds 3) ngroups)))
+         (map (nso-probe-fold-map groups folds))
+         (n (length items))
+         (out (make-vector n nil))
+         (f 0))
+    (while (< f folds)
+      (let ((fit nil) (fy nil) (hold nil) (hi nil) (i 0) (rg groups) (ry ys))
+        (dolist (x items)
+          (if (= f (gethash (car rg) map))
+              (progn (push x hold) (push i hi))
+            (push x fit) (push (car ry) fy))
+          (setq i (1+ i) rg (cdr rg) ry (cdr ry)))
+        (setq fit (nreverse fit) fy (nreverse fy)
+              hold (nreverse hold) hi (nreverse hi))
+        (unless (and fit hold)
+          (error "nso-score-oof-margins: fold %d left a side empty" f))
+        (let* ((feat (funcall featurizer fit fy))
+               (fx (mapcar feat fit))
+               (std (nso-standardizer fx))
+               (head (nso-score-train
+                      (mapcar (lambda (v) (nso-standardize std v)) fx)
+                      fy k (or steps 600) (or lr 0.5) (or l2 0.01)))
+               (rt hi))
+          (dolist (x hold)
+            (aset out (car rt)
+                  (nso-score-margins head (nso-standardize std (funcall feat x))))
+            (setq rt (cdr rt)))))
+      (setq f (1+ f)))
+    (append out nil)))
 
 (defun nso-score-scale-margins (margins temp)
   "MARGINS with every entry divided by TEMP."
