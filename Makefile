@@ -7,9 +7,14 @@ PHOTON ?= ../nelisp-photon/lisp
 LLM    ?= ../nelisp-llm/lisp
 NELISP ?= ../nelisp/target/nelisp
 
+ELC  = build/elc
 LOAD = -L lisp -L $(PHOTON) -L $(LLM)
+# The same load path with the byte-compiled sibling cache in FRONT.  Only the
+# targets that depend on `deps' may use it: build/elc shadows the sibling
+# sources, so a cache nothing rebuilt is a cache that silently wins.
+FAST = -L $(ELC) $(LOAD)
 
-.PHONY: test compile clean p1 score
+.PHONY: test compile deps clean p1 score
 
 # Everything runs byte-compiled, and that is a performance decision rather
 # than a tidiness one.  The numeric loops in lisp/ are interpreted when Emacs
@@ -37,17 +42,32 @@ test: compile
 compile:
 	$(EMACS) -Q --batch $(LOAD) -f batch-byte-compile lisp/*.el
 
+# The sibling lisp, byte-compiled into build/elc.  A dependency of every
+# target that puts $(ELC) on the load path, and it is one because leaving it
+# manual cost an encode run: the cache was fourteen hours older than
+# nelisp-llm's weight loader, the stale .elc shadowed the edited source, and
+# the failure surfaced as a wrong-type-argument naming a tensor inside the
+# first block rather than as anything to do with loading.  byte-compile-file
+# rebuilds unconditionally, so depending on this is enough.
+deps:
+	$(EMACS) -Q --batch -l tools/compile-deps.el
+
 # The P1 encode-and-probe run.  Goes through compile for the same reason the
 # suites do; NSO_P1_STAGE selects tokenize / encode / probe / all.
-p1: compile
-	$(EMACS) -Q --batch $(LOAD) -l tools/p1-encode-probe.el
+# Through $(FAST), which is how P1's reported 10.0s per example was actually
+# measured -- by hand, with -L build/elc, which `make p1' did not reproduce.
+# A number in the design document that the committed command cannot produce is
+# a number nobody can check.
+p1: compile deps
+	$(EMACS) -Q --batch $(FAST) -l tools/p1-encode-probe.el
 
 # The Score encode-and-probe run.  Goes through compile for the same reason
 # p1 does; NSO_SCORE_STAGE selects tokenize / encode / probe / all.  The probe
 # path is exercised without a GPU by tools/score-fake-states.el, in both the
 # signal and the noise mode, which is what says it can report a failure.
-score: compile
-	$(EMACS) -Q --batch -L build/elc $(LOAD) -l tools/score-encode-probe.el
+score: compile deps
+	$(EMACS) -Q --batch $(FAST) -l tools/score-encode-probe.el
 
 clean:
 	rm -f lisp/*.elc test/*.elc
+	rm -rf $(ELC)

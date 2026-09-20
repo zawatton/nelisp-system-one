@@ -36,6 +36,43 @@
 (dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
   (add-to-list 'load-path (nso-sc--sib d)))
 
+;;; A stale sibling cache must not be able to win quietly
+;;
+;; build/elc holds byte-compiled copies of the sibling lisp and sits in FRONT
+;; of the sibling sources on the load path, so an .elc older than its .el
+;; shadows an edited file.  That happened on this phase's first encode: the
+;; cache was fourteen hours behind nelisp-llm's weight loader, the layers
+;; uploaded, the CPU reference check passed at 3.7e-09 -- and the first block
+;; died with a wrong-type-argument naming a tensor, which looks like anything
+;; except a load-path problem.
+;;
+;; The Makefile now rebuilds the cache as a dependency, which is the actual
+;; fix.  This is the backstop, and it checks the quantity that matters
+;; directly -- the mtime of the exact files on the load path -- rather than a
+;; proxy for it.
+
+(defun nso-sc--check-deps-fresh ()
+  "Signal when any cached sibling .elc is older than the source it shadows."
+  (let ((cache (nso-sc--own "build/elc"))
+        (stale nil))
+    (when (file-directory-p cache)
+      (dolist (elc (directory-files cache t "\\.elc\\'"))
+        (let ((base (file-name-base elc)))
+          (dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
+            (let ((src (expand-file-name (concat base ".el") (nso-sc--sib d))))
+              (when (and (file-readable-p src)
+                         (time-less-p (file-attribute-modification-time
+                                       (file-attributes elc))
+                                      (file-attribute-modification-time
+                                       (file-attributes src))))
+                (push base stale)))))))
+    (when stale
+      (error (concat "score: %d cached .elc are older than their sources (%s). "
+                     "build/elc shadows them on the load path.  Run `make deps'")
+             (length stale) (mapconcat #'identity (sort stale #'string<) ", ")))))
+
+(nso-sc--check-deps-fresh)
+
 (require 'nso-score)
 (require 'nso-probe)
 (require 'nso-stub)
