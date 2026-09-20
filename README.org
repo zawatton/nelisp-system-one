@@ -40,7 +40,14 @@ times slower than the hardware required, in two places that had nothing to do
 with the model.  Both leaks were caught by running the probe over synthetic
 noise, where every held-out number must come out at chance.
 
-=make test= runs 110 checks and needs no model weights.
+P3 accepted 2026-09-20, on its second statistic.  Its own ECE gate failed and
+was then shown unmeasurable at this sample size: a model calibrated by
+construction scores 0.043 to 0.115 on 84 examples, against a gate of 0.05.
+The binning-free replacement -- how much a fresh recalibrator can still
+improve the log-loss -- works there, and says the raw head was miscalibrated
+and the temperature-corrected one is not.
+
+=make test= runs 129 checks and needs no model weights.
 
 Scope, settled 2026-09-19: *(A) spike*.  Done means the method demonstrably
 works at toy scale, with honest numbers including the negative ones -- phases

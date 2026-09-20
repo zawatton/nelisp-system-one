@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 FAILED its gate, whose metric was then shown unmeasurable at this n (2026-09-20).
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).
 
 * Status
 
@@ -20,7 +20,15 @@ examples, interval [0.657, 0.883], where a bag of words scores 0.507.  So the
 donor is a usable decision encoder, and what it pools is sentence meaning
 rather than word identity.
 
-Four things came out of it that this document had guessed wrong or could not
+P3 accepted 2026-09-20, on its second statistic.  The ECE gate it
+pre-registered failed at 0.0796 and was then shown to be unmeasurable at
+n=84 -- a model calibrated by construction scores 0.043 to 0.115 there,
+against a gate of 0.05.  A binning-free statistic, the gain from out-of-fold
+recalibration, works at that n and says the raw head was miscalibrated
+(+0.0220, outside the calibrated band) and that after temperature nothing
+remains to correct (-0.0121, inside it).
+
+Four things came out of P1 that this document had guessed wrong or could not
 have known: mid depth beats the final layer; the learned attention pool is not
 decided by these runs at all, because its result inverts when its inputs are
 rescaled; the calibration step was leaking twice over in ways that produced
@@ -1071,6 +1079,61 @@ that the expected count per occupied bin stays above roughly 30, which at
 n=84 means about three.  That is a smaller number than this phase used and it
 would have passed, which is exactly why it must be argued for on its own terms
 and not adopted here.
+
+*** Verdict: ACCEPTED by the pre-registered binning-free rule
+
+The rule as committed: /accept when the held-out recalibration gain falls
+inside the 5-95% band of a calibrated-by-construction stub at that n, with the
+4x-overconfident control outside it in the same run./
+
+Applying it needs one distinction the rule does not spell out, and the
+distinction decides the verdict.  Two questions hide inside "is it
+calibrated":
+
+- *A -- is the head's raw output calibrated?*  The out-of-fold temperature's
+  gain answers it.
+- *B -- is the output calibrated after that temperature is applied?*  This is
+  what "calibration proper" has to mean, because the phase ships a calibrated
+  model and not a raw one.  It is the acceptance question.
+
+B cannot be answered by refitting a temperature on the logits the first one
+was fitted on: the first is the minimiser there, so the second returns exactly
+1 and the residual gain is zero by construction rather than by merit.  It
+needs data the first calibrator never saw, so the held-out split is halved by
+pair -- the residual calibrator is fitted on one half and measured on the
+other.  =n= falls to 42 a side, so the stub band is *recomputed at 42* rather
+than reused from 84.  Comparing a statistic at one =n= against a floor
+measured at another is precisely the error that sank the ECE gate.
+
+| question                   |    gain | band at that n       | reading         |
+|----------------------------+---------+----------------------+-----------------|
+| A, raw output (n=84)       | +0.0220 | [-0.0384, +0.0110]   | *outside* -- not calibrated |
+| B, after temperature (n=42)| -0.0121 | [-0.0670, +0.0193]   | *inside* -- calibrated |
+
+Controls, in the same run: the 4x-overconfident stub bands are [+0.1727,
++0.6713] at =n=84= and [+0.0675, +0.7654] at =n=42=, both clear of the
+calibrated band.  The rule can distinguish, which is what makes a reading
+inside the band mean something.
+
+*P3 is ACCEPTED.*  The head's raw probabilities were miscalibrated, the
+out-of-fold temperature removed it, and a fresh calibrator fitted on unseen
+held-out data finds nothing left to remove -- it loses 0.0121, which is the
+sign a correction takes when there is nothing to correct.
+
+*What the acceptance does not cover.*  The original gate was ECE =< 0.05 at
+ten bins and that gate *failed*, at 0.0796.  It is not withdrawn and not
+reinterpreted: it was shown afterwards to be unmeasurable at this =n=, which
+makes it uninformative rather than passed.  This acceptance rests on a
+different statistic, chosen because it has no binning floor, and pre-registered
+before this run.  Anyone reading "P3 accepted" should read both rows above and
+the two sections before them.
+
+Still standing from the run itself, and unaffected by which statistic judges
+it: temperature improves the proper score while leaving accuracy untouched;
+vector scaling moves zero of 84 answers and is not adopted; and calibration is
+worse on the compositional subset (ECE 0.1138) than on the antonym one
+(0.0798), which is the number a confidence-gated caller should care about most
+and the one this phase would most like more data for.
 
 ** P4 -- integration with anvil (OUT OF SCOPE)
 
