@@ -232,6 +232,71 @@
       (nso-t-green "the corrected set passes it"
                    (nso-calibration-gate (funcall mk temp))))))
 
+
+;;; --- vector scaling, and what it costs -----------------------------------
+;;
+;; Platt scaling has a slope and an intercept where temperature has only a
+;; slope.  The point of these checks is the difference that makes: temperature
+;; is monotone through the origin and provably cannot change an answer, while
+;; an intercept moves the 0.5 boundary and can.  A calibration step that
+;; quietly reclassifies examples is a different kind of object from one that
+;; only adjusts confidence, and the suite should say which one it is holding.
+
+(let* ((rng (nso-rng 53))
+       (n 2000)
+       (logits nil) (ys nil))
+  ;; Labels drawn from sigmoid(z - 1.2): the calibrated answer needs BOTH a
+  ;; slope and a shift, so temperature alone cannot reach it.
+  (dotimes (_ n)
+    (let* ((z (* 4.0 (- (nso-rng-float rng) 0.5)))
+           (y (if (< (nso-rng-float rng) (nso-sigmoid (- z 1.2))) 1.0 0.0)))
+      (push z logits) (push y ys)))
+  (let* ((tfit (nso-temperature-fit logits ys))
+         (pfit (nso-platt-fit logits ys 3000 0.5))
+         (temp (plist-get tfit :temperature)))
+    (message "  temperature %.3f -> NLL %.4f;  Platt a=%.3f b=%.3f -> NLL %.4f (%d flips)"
+             temp (plist-get tfit :nll-after)
+             (plist-get pfit :a) (plist-get pfit :b)
+             (plist-get pfit :nll-after) (plist-get pfit :flips))
+    (nso-t-num "Platt recovers the shift it was given"
+               (plist-get pfit :b) -1.2 0.35)
+    (nso-t-lt "and beats temperature where a shift is needed"
+              (plist-get pfit :nll-after) (plist-get tfit :nll-after))
+    (nso-t-lt "never worse than temperature, which contains it"
+              (plist-get pfit :nll-after) (+ 1.0e-6 (plist-get tfit :nll-after)))
+    (nso-t-gt "which it pays for by moving answers across the boundary"
+              (float (plist-get pfit :flips)) 0.5)
+    ;; The contrast that makes the previous line meaningful.
+    (let ((flips 0))
+      (dolist (z logits)
+        (unless (eq (>= (nso-sigmoid z) 0.5)
+                    (>= (nso-sigmoid (/ z temp)) 0.5))
+          (setq flips (1+ flips))))
+      (nso-t "while temperature moves none of them" (= 0 flips)))))
+
+;; Where no shift is needed, the intercept should stay near zero and the two
+;; methods should agree -- otherwise the extra parameter is just noise.
+(let* ((rng (nso-rng 59))
+       (logits nil) (ys nil))
+  (dotimes (_ 2000)
+    (let* ((z (* 4.0 (- (nso-rng-float rng) 0.5)))
+           (y (if (< (nso-rng-float rng) (nso-sigmoid (* 0.25 z))) 1.0 0.0)))
+      (push (* 4.0 z) logits) (push y ys)))
+  (let ((pfit (nso-platt-fit logits ys 3000 0.5))
+        (tfit (nso-temperature-fit logits ys)))
+    (message "  no shift needed: Platt b=%.3f, NLL %.4f vs temperature %.4f"
+             (plist-get pfit :b) (plist-get pfit :nll-after)
+             (plist-get tfit :nll-after))
+    (nso-t-lt "with no shift to find, Platt leaves the intercept near zero"
+              (abs (plist-get pfit :b)) 0.2)
+    ;; The containment, asserted in the direction that can fail.  Temperature
+    ;; is Platt with the intercept pinned at zero, so a fitted Platt can never
+    ;; be worse; if it is, the optimiser did not converge.  The earlier form
+    ;; of this check compared the gap to a tolerance and passed while Platt
+    ;; was losing by 0.13.
+    (nso-t-lt "Platt is never worse than temperature, here too"
+              (plist-get pfit :nll-after) (+ 1.0e-6 (plist-get tfit :nll-after)))))
+
 ;;; --- the probe learns, and the leak control ------------------------------
 
 (defun ht--split (xs ys k)

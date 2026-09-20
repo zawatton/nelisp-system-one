@@ -371,6 +371,86 @@ Returns (:temperature T :nll-before N0 :nll-after N1)."
             :nll-before (nso-temperature-nll logits ys 1.0)
             :nll-after (nso-temperature-nll logits ys temp)))))
 
+(defun nso-platt-nll (logits ys a b)
+  "Mean BCE of sigmoid(A*z + B) over LOGITS against YS."
+  (let ((n (length logits)) (sum 0.0) (rest ys))
+    (dolist (z logits)
+      (setq sum (+ sum (nso-bce (nso-sigmoid (+ (* a z) b)) (car rest))))
+      (setq rest (cdr rest)))
+    (/ sum n)))
+
+(defun nso-platt-fit (logits ys &optional iters _lr)
+  "Fit a two-parameter calibration sigmoid(A*z + B) to LOGITS/YS.
+
+Vector scaling, in the binary case: a slope and an intercept where temperature
+scaling has only a slope.  The extra parameter is not free.  Temperature is
+monotone THROUGH THE ORIGIN, so it cannot move the 0.5 boundary and cannot
+change a single answer; an intercept moves the boundary and can.  So this is
+judged on accuracy as well as on calibration, and the result reports the flips
+to make that possible.
+
+Fitted by Newton rather than gradient descent, which removes the step size
+instead of tuning it.  Two earlier attempts here failed on exactly that: from
+the identity, descent at lr 0.5 finished at NLL 0.811 where temperature
+reached 0.679; started at temperature's own solution it reached 0.915, worse
+still, because the logits ran to 8 and a fixed step of that size oscillates.
+The problem is two-dimensional and convex, so the Hessian is a 2x2 and there
+is no reason to guess a step at all.  A fitted Platt can then never be worse
+than temperature, which it contains, and the suite asserts that in the
+direction that can fail.
+
+Returns (:a A :b B :nll-before N0 :nll-after N1 :flips F)."
+  (let* ((iters (or iters 50))
+         (n (length logits))
+         (a 1.0) (b 0.0)
+         (i 0))
+    (ignore _lr)
+    (while (< i iters)
+      (let ((ga 0.0) (gb 0.0) (haa 0.0) (hab 0.0) (hbb 0.0) (rest ys))
+        (dolist (z logits)
+          (let* ((p (nso-sigmoid (+ (* a z) b)))
+                 (g (- p (car rest)))
+                 (w (* p (- 1.0 p))))
+            (setq ga (+ ga (* g z)) gb (+ gb g)
+                  haa (+ haa (* w z z)) hab (+ hab (* w z)) hbb (+ hbb w)))
+          (setq rest (cdr rest)))
+        (setq ga (/ ga n) gb (/ gb n)
+              haa (/ haa n) hab (/ hab n) hbb (/ hbb n))
+        ;; A ridge keeps the solve well posed when the weights collapse, which
+        ;; they do once the fit is confident everywhere.
+        (setq haa (+ haa 1.0e-8) hbb (+ hbb 1.0e-8))
+        (let ((det (- (* haa hbb) (* hab hab))))
+          (when (< (abs det) 1.0e-14) (setq det 1.0e-14))
+          (let* ((da (/ (- (* hbb ga) (* hab gb)) det))
+                 (db (/ (- (* haa gb) (* hab ga)) det))
+                 ;; Backtracking, because an undamped Newton step is not safe
+                 ;; here.  Once the fit saturates, p(1-p) collapses, the
+                 ;; Hessian is nearly singular and the solve returns something
+                 ;; enormous: the undamped version reached b = 4.2e5 and an
+                 ;; NLL of 15.9 on a set where temperature managed 0.679.
+                 ;; Halving until the objective actually falls makes each step
+                 ;; a decrease by construction.
+                 (base (nso-platt-nll logits ys a b))
+                 (t* 1.0)
+                 (tries 0)
+                 (ok nil))
+            (while (and (not ok) (< tries 40))
+              (let ((na (- a (* t* da))) (nb (- b (* t* db))))
+                (if (<= (nso-platt-nll logits ys na nb) base)
+                    (setq a na b nb ok t)
+                  (setq t* (* 0.5 t*) tries (1+ tries)))))
+            (when (or (not ok)
+                      (< (* t* (+ (abs da) (abs db))) 1.0e-12))
+              (setq i iters)))))
+      (setq i (1+ i)))
+    (let ((flips 0))
+      (dolist (z logits)
+        (unless (eq (>= z 0.0) (>= (+ (* a z) b) 0.0))
+          (setq flips (1+ flips))))
+      (list :a a :b b :flips flips
+            :nll-before (nso-platt-nll logits ys 1.0 0.0)
+            :nll-after (nso-platt-nll logits ys a b)))))
+
 ;;; Answers
 
 (defun nso-noul-answer (p)

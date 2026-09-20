@@ -848,6 +848,52 @@ Proper-scoring-rule objective, temperature and vector scaling, the full gate of
 
 Accept when: ECE on a named held-out set is below a threshold fixed *before* the
 run, with binning scheme and =n= stated, and the miscalibrated control is red.
+*** Pre-registration, written and committed before the run
+
+/This subsection was committed before the measurement it judges.  The criterion
+says "a threshold fixed before the run", and a threshold chosen after seeing
+the number is not one; the git history is what makes the claim checkable./
+
+*Evaluation set.*  The P1 held-out split: 84 examples, 42 minimal pairs, split
+by pair from the 252-example Noul set.  Features are mid-depth last-token
+states, the P1 winner.  No re-encoding -- the states on disk are the same ones
+P1 reported from.
+
+*Metric.*  Top-label ECE, *10 equal-width bins*, reported with =n= beside it,
+plus the reliability table.  Equal-mass is reported as a secondary and is not
+the gate.
+
+*Calibrators.*  Both fitted on *out-of-fold logits from the training split*,
+three folds by pair, never on the held-out set and never on the training
+logits the head has already separated -- the two mistakes P1 made in order.
+
+*The thresholds, fixed now:*
+
+1. *Gate.*  Held-out ECE after calibration =<= 0.05=.  This is the
+   repository's standing `nso-default-ece-threshold', not a number picked to
+   suit.  P1 already reached 0.040 with temperature alone, so this clause is
+   nearly free and is not where the phase is decided.
+
+2. *The real question.*  Vector scaling is adopted over temperature only if it
+   *both* lowers held-out ECE by at least 0.005 *and* does not lower held-out
+   accuracy at all.  Temperature cannot change an answer; vector scaling can,
+   and a calibration step that quietly reclassifies examples has to pay for
+   it.  If it lowers ECE but costs accuracy, temperature stays and this doc
+   says so.
+
+3. *Negative control.*  The 4x-overconfident stub must come out red on the
+   same gate, at the same bin count, in the same run.  A gate that only ever
+   passes is not a gate.
+
+4. *Honesty clause.*  Per-difficulty ECE (antonym against compositional) is
+   reported whatever it shows.  If the model is well calibrated overall and
+   badly calibrated on the harder subset, that is the finding, and it is the
+   one a confidence-gated caller would care about most.
+
+*What would make this phase fail:* held-out ECE above 0.05 after both
+calibrators; or the negative control coming out green; or a leak found in the
+out-of-fold construction.
+
 
 ** P4 -- integration with anvil (OUT OF SCOPE)
 
