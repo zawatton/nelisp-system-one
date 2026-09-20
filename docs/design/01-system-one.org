@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Spike CLOSED 2026-09-20 -- see §10.
 
 * Status
 
@@ -1208,6 +1208,136 @@ This is a separate repository rather than =nelisp-llm/docs/design/09= because
 the object is different: =nelisp-llm= builds and trains language models, and a
 System One model is defined by *not* being one.  Sharing the substrate is not a
 reason to share the repository.
+
+* 10. Closing the spike
+
+Written 2026-09-20, after P3's verdict.  Scope (A) is met: P0-P3 ran, the
+numbers are all here including the ones that went the wrong way, and this
+section is the deliverable.
+
+** 10.1 What the spike answered
+
+The question was whether a frozen 0.6B causal donor plus a typed head
+reproduces what a System One model *does* -- not whether it matches Jev, which
+is closed and cannot be matched from outside.  §1 split the vendor's claims
+into three reproducible in kind and one not.  Against that split:
+
+| claim                             | reproducible?   | outcome                                                                                                             |
+|-----------------------------------+-----------------+---------------------------------------------------------------------------------------------------------------------|
+| (a) output typed, always valid    | structurally    | delivered -- the gate rejects every ill-typed answer the suite constructs, and mutation checks show it can still fail |
+| (b) one parallel pass, no tokens  | architecturally | delivered -- one forward pass per decision                                                                          |
+| (c) probabilities calibrated      | in effect       | delivered at n=84, by a binning-free rule (P3)                                                                      |
+| (d) orders of magnitude cheaper   | no              | not claimed; no timing number in this repository is a claim about Jev                                               |
+
+Three of four, at toy scale.  The fourth was ruled out before any code existed
+and nothing here walked it back.
+
+** 10.2 The measurements that stand
+
+| phase | question                                       | result                                                                       |
+|-------+------------------------------------------------+------------------------------------------------------------------------------|
+| P0    | can the harness fail?                          | yes -- negative controls red, 129 checks green                               |
+| P1    | does a frozen donor pool into a decision head? | yes -- 0.857 held-out against a 0.500 majority baseline                      |
+| P1    | words, or composition?                         | composition -- 0.792 on compositional pairs where bag-of-words scores 0.507  |
+| P2    | does the same encoder support Choice?          | not accepted -- 0.375 on held-out topics, 0.25 chance                        |
+| P3    | is the head calibrated?                        | accepted -- corrected output inside the calibrated band, control separated   |
+
+The compositional number is the load-bearing one.  =failed to lose= and
+=failed to win= share every content word; a model scoring 0.792 on that subset
+is not matching vocabulary.  It is the only row in the table that could not
+have come out of a lookup table, and it is what makes the category look real
+at this scale.
+
+** 10.3 What this document got wrong
+
+Four claims written before measurement were contradicted by measurement.  All
+four are corrected in place above rather than quietly dropped:
+
+1. *§3.2 assumed the final layer.*  Mid depth wins.  The final layer of a
+   causal LM is specialised for next-token prediction, which is the wrong job.
+2. *§3.2 expected the learned attention pool to win.*  It is undecided: the
+   result inverts under feature rescaling, so the experiment measured the
+   optimiser, not the pooling.  P1's claim that the learned pool "loses" was
+   withdrawn.
+3. *§4.3 had the ECE bias backwards.*  Few samples per bin biases ECE *away*
+   from zero, not toward it; coarse bins bias toward zero by cancellation.
+   Measured on stubs calibrated by construction: 0.0876 at n=100 against
+   0.0109 at n=4000.
+4. *§4.3's gate was unmeasurable at this n.*  At n=84 a perfectly calibrated
+   model scores 0.043-0.115 depending on bin count, against a 0.05 gate.  The
+   gate needs n around 2000 at ten bins.  P1's reported 0.040 was inside the
+   noise floor as well, and was measured at five bins where the gate was ten.
+
+The fourth is why P3 is accepted on a binning-free statistic, and why the ECE
+gate is neither withdrawn nor treated as passed: it was shown uninformative,
+which is a different thing from being met.
+
+** 10.4 Why P2 was not accepted, specifically
+
+Choice reached 0.375 against 0.25 chance on four entirely held-out topics --
+above chance, below useful.  The diagnosis is narrower than "Choice does not
+work":
+
+- State and option embeddings come from the same frozen encoder, whose states
+  have mean pairwise cosine 0.923.  The geometry is anisotropic enough that a
+  diagonal map has little room to separate topics it never saw.
+- Replacing bare topic names with descriptions in the request register helped,
+  which says part of the gap is register mismatch rather than capacity.
+- Two remedies were identified and not run: more than diagonal capacity, and
+  whitening rather than per-axis standardisation.
+
+So the honest statement is that *this* encoder with *this* head does not
+support Choice on unseen topics -- not that option scoring is the wrong
+architecture.  §3.1's argument for option scoring over slot classification is
+untouched: a slot classifier could not have been evaluated on held-out topics
+at all.
+
+** 10.5 What it cost, and what was declined
+
+The full encode plus probe went from 190 minutes to 59 for 252 examples, in
+three measured steps: IPC batching (39.7 to 16.3 s/example), byte-compiling
+this repository's lisp (attention path 54 to 10 minutes), and byte-compiling
+the sibling lisp into =build/elc= (16.3 to 10.0 s/example).
+
+Two costs were declined deliberately, and are recorded rather than left
+silent: GPU compiled batches (worth at most another 1.5x, and the work belongs
+in the sibling repository) and native compilation (measured at 1.34x, not
+worth the build complexity for a spike).
+
+** 10.6 Method faults worth carrying forward
+
+Three patterns recurred in this spike's own process.  They are recorded
+because they are the part of the work that transfers:
+
+1. *Synthetic tests hid real-scale failures* (three times).  Every suite here
+   now carries at least one case at real scale or with real geometry.
+2. *Fixed step sizes lost to input scale* (four times).  An optimiser handed
+   features it did not standardise is measuring the features, not the method.
+3. *A check firing is not the check measuring the right quantity* (twice).
+   The timing guard had a negative control and the control passed -- which
+   confirmed the check fires below its threshold, not that timing was the
+   right quantity to threshold.  The Platt assertion was green while Platt
+   lost by 0.13 NLL, because it was written in the direction that cannot fail.
+
+A fourth, from P3: comparing a statistic measured under one setting against a
+floor measured under another -- five-bin ECE against a ten-bin gate, a band at
+n=84 against a gain at n=42 -- is the same error every time, and it is easy to
+commit in the very paragraph warning about it.
+
+** 10.7 What is not established
+
+- *Nothing about deployment.*  n=84 held out, author-written data, no LoRA,
+  one donor, one language.  §8's prohibition on production claims stands.
+- *The compositional subset is the weakest actionable point*: ECE 0.1138
+  against 0.0798 on antonym pairs.  The head is least calibrated exactly where
+  it is most interesting.  More data is the remedy, not a different
+  calibrator.
+- *Score was never built.*  §2's ordinal signature stands unimplemented.
+- *Nothing here says anything about Jev.*  The category is reproducible; the
+  artefact is not, and no result above should be read as a comparison.
+
+The spike is complete under §8.  Reopening it for (B) remains a new decision,
+taken by revising §8 -- not by pointing at P1's 0.857.
 
 * Sources
 
