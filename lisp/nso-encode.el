@@ -63,6 +63,37 @@
   (when (file-executable-p bin)
     (setq nelisp-gpu-server-bin bin)))
 
+(defconst nso-encode-vram-needed-mib 900
+  "Free VRAM this encoder wants before it starts, in MiB.
+Qwen3-0.6B is about 568 MiB of int8 resident, and the per-call activation
+buffers and the driver's own overhead want headroom on top.")
+
+(defun nso-encode-free-vram-mib ()
+  "Free VRAM in MiB, or nil when it cannot be determined."
+  (when (executable-find "nvidia-smi")
+    (let ((out (with-temp-buffer
+                 (ignore-errors
+                   (call-process "nvidia-smi" nil t nil
+                                 "--query-gpu=memory.free"
+                                 "--format=csv,noheader,nounits"))
+                 (buffer-string))))
+      (when (string-match "\\([0-9]+\\)" out)
+        (string-to-number (match-string 1 out))))))
+
+(defun nso-encode-check-vram ()
+  "Signal with a usable message when the card has no room.
+
+Without this the failure arrives two minutes into a run as \"Process vkserver
+not running: terminated\", which says nothing about why.  A P2 encode died
+that way with Ollama holding 3.1 GB of a 6 GB card, and the log recorded only
+the symptom.  Checking first turns a wasted resident load into one line."
+  (let ((free (nso-encode-free-vram-mib)))
+    (when (and free (< free nso-encode-vram-needed-mib))
+      (error (concat "nso-encode: %d MiB free on the GPU, want %d. "
+                     "Something else is using the card")
+             free nso-encode-vram-needed-mib))
+    free))
+
 (defun nso-encode--gather (src seq width fn)
   "Build a SEQ x WIDTH buffer by calling FN with each position index.
 FN returns that position's WIDTH-long vector."

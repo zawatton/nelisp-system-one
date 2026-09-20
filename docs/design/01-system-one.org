@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED 2026-09-19; P2-P3 open.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED (2026-09-20); P3 open.
 
 * Status
 
@@ -667,6 +667,116 @@ Accept when: Choice works on an option set held out from training (this is the
 whole point of scoring options rather than classifying into slots); the ordinal
 head beats a plain softmax on an ordinal task, /or/ is dropped and this doc says
 so.
+*** Choice: NOT ACCEPTED, and the reason is not the one the numbers first said
+
+The head is built (=lisp/nso-choice.el=), the dataset is built
+(=data/choice-intent.eld=: 12 topics, 144 requests, 4 topics held out entirely
+-- sentences and option text alike, with no lexical overlap between a sentence
+and its own topic name), and the measurement was run.  Choice does *not* clear
+the acceptance criterion.
+
+| evaluation             |  n | options | accuracy |        95% CI | chance |
+|------------------------+----+---------+----------+---------------+--------|
+| seen topics, training  | 96 |       8 |    0.385 |            -- |  0.125 |
+| held-out topics        | 48 |       4 |    0.104 | [0.045,0.222] |  0.250 |
+| held-out vs all topics | 48 |      12 |    0.042 | [0.012,0.140] |  0.083 |
+
+*** What the first numbers were, and why they were not an answer
+
+The first run reported 0.250 held out on four options -- exactly chance -- and
+0.000 against twelve.  It would have been easy to write that up as section
+3.1's architecture failing.  One number forbade it: *training* accuracy was
+0.250 on an eight-way task where chance is 0.125.  The head had not fitted the
+data it was fitted on, and a model that did not train says nothing about
+whether its design generalises.  That is the same trap P1 fell into over the
+attention pool, one phase earlier.
+
+Diagnosed (=tools/p2-fit-probe.el=), the shipped setting had diverged:
+
+| states       | lr    | train acc | loss  |
+|--------------+-------+-----------+-------|
+| raw          | 0.5   |     0.219 | 27.8  |
+| raw          | 0.02  |     0.521 | 2.525 |
+| standardised | 0.5   |     0.542 | 1.844 |
+| standardised | 0.001 |     0.188 | 2.694 |
+
+A cross-entropy of 27.8 is divergence.  So the first P2 table measured an
+optimiser, not an architecture, and it is not reported above.
+
+*** Why the head still does not fit after that is fixed
+
+Two geometries, measured on the encoded states:
+
+| embeddings | mean pairwise cosine | min   | max   |
+|------------+----------------------+-------+-------|
+| options    |                0.683 | 0.572 | 0.848 |
+| states     |                0.923 | 0.859 | 0.966 |
+
+The states sit in a narrow cone.  The Noul head of P1 survived that because a
+binary decision needs one direction; separating eight does not.  Standardising
+centres the cone away and is now what the probe does, which lifts training
+accuracy from 0.250 to 0.385 -- real signal at three times chance, and still
+not a fit.
+
+The synthetic suite reproduces the geometry exactly (mean cosine 0.923, RMS 4)
+and *fits it completely*: standardised, the head reaches 1.000 there against
+0.487 raw.  So the remaining gap is not scale and not conditioning.  It is
+that the donor's pooled request states and its pooled topic-label embeddings
+do not stand in the relation this head assumes -- the state does not point at
+its own option's direction the way a synthetic state does.
+
+*** One hypothesis tested and refuted
+
+The below-chance held-out accuracy invited an obvious explanation: the
+option-only term =c . o_i= is a score for an option with no reference to the
+state, a learned prior expressed through embeddings rather than indices, and
+such a prior is arbitrary on options it has never seen -- arbitrary in a fixed
+direction, which is how a head lands below chance rather than at it.
+
+Freezing =c= at zero (=NSO_P2_FREEZE_C=, an ablation now in
+`nso-choice-train') changes nothing: held-out stays at 0.104 either way.  The
+hypothesis is refuted and the below-chance behaviour comes from the gate
+itself.
+
+*** What this does and does not establish
+
+- It does *not* establish that option-scoring fails as an architecture.  The
+  synthetic suite still shows the property that motivated section 3.1: a head
+  fitted on five option directions reaches 1.000 on five it has never seen,
+  and 0.942 on twelve.  The principle works where the state genuinely points
+  at its option.
+- It *does* establish that a frozen Qwen3-0.6B, pooled by the P1 recipe, does
+  not produce request states and topic-label embeddings that live in such a
+  relation.  Pooling a two-word label and a ten-word request through the same
+  causal encoder and expecting a diagonal bilinear form to align them was an
+  assumption, and it is the assumption that failed.
+
+What would test it properly: pooled option embeddings built from descriptions
+rather than two-word labels; a shared projection with more than diagonal
+capacity, which needs more than 144 examples to fit; whitening rather than
+per-dimension standardisation, since the cone is a covariance structure and
+not a per-axis one.  Each is a phase of its own.
+
+*** The second time a synthetic suite hid a real-scale failure
+
+=test/choice-test.el= passed 9 of 9 -- including unseen options at 1.000 --
+while the shipped setting diverged on real features.  It used unit-norm
+directions; the real states have RMS 4 and sit in a cone.  P1's attention pool
+was the first instance of exactly this.  Twice is a pattern, not luck, so the
+suite now carries a realistic-scale case that reproduces the geometry and
+pins what actually happens there.
+
+One assertion in that new case was written before measuring and was wrong: it
+demanded that raw features blow the loss up threefold, and the synthetic only
+loses half the fit rather than diverging outright.  It now asserts the effect
+that reproduces.
+
+*** Score
+
+Not started.  Choice is the acceptance criterion's first clause and it is not
+met; taking the ordinal head on before the state/option geometry is understood
+would be building on a foundation this phase has just found unsound.
+
 
 ** P3 -- calibration proper
 
