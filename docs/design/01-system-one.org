@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED (2026-09-20); P3 open.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 FAILED its own gate (2026-09-20).
 
 * Status
 
@@ -10,7 +10,8 @@ mutations that make both of them evidence rather than decoration.
 P1 shipped 2026-09-19 and answers the question the project was built to ask.  A
 frozen Qwen3-0.6B, pooled, with a linear head reaches *0.857* held-out against
 a majority baseline of *0.500*, and ECE 0.051 falls to 0.040 after temperature
-scaling.  On the compositional subset -- pairs that share their polarity words
+scaling -- /at five bins; P3 later measured the same predictions at ten and got
+0.0796, and failed its gate on them/.  On the compositional subset -- pairs that share their polarity words
 and differ only in how those words compose -- it reaches *0.792* over 48
 examples, interval [0.657, 0.883], where a bag of words scores 0.507.  So the
 donor is a usable decision encoder, and what it pools is sentence meaning
@@ -894,6 +895,88 @@ logits the head has already separated -- the two mistakes P1 made in order.
 calibrators; or the negative control coming out green; or a leak found in the
 out-of-fold construction.
 
+
+*** Result: FAILS its own gate, and the pre-registration's reasoning was the error
+
+| calibration           | accuracy |    ECE |    NLL |  Brier | answers moved |
+|-----------------------+----------+--------+--------+--------+---------------|
+| uncorrected           |    0.857 | 0.0772 | 0.3830 | 0.1908 | --            |
+| temperature (T=1.18)  |    0.857 | 0.0796 | 0.3610 | 0.1912 | 0             |
+| vector (a=0.85 b=0.00)|    0.857 | 0.0795 | 0.3611 | 0.1912 | 0             |
+
+Gate: held-out ECE =< 0.05 at ten equal-width bins.  *Both calibrators fail
+it*, at 0.0796 and 0.0795.
+
+*The pre-registration said this clause would be "nearly free" because P1
+already reached 0.040.  That reasoning was wrong, and wrong in the specific
+way section 4.3 warns about.*  P1's 0.040 was measured at *five* bins and the
+gate was written at *ten*.  Same model, same predictions, bin count alone:
+
+| equal-width bins | ECE    | mean examples per non-empty bin |
+|------------------+--------+---------------------------------|
+|                3 | 0.0349 |                            42.0 |
+|                5 | 0.0401 |                            28.0 |
+|               10 | 0.0796 |                            16.8 |
+|               15 | 0.0975 |                            10.5 |
+|               20 | 0.1129 |                             8.4 |
+
+Section 4.3 records that scarce data per bin biases ECE away from zero, with
+0.0876 at n=100 against 0.0109 at n=4000 for a stub that is calibrated by
+construction.  The same effect is here: n=84 across ten bins is about 17
+examples each, and the estimate roughly doubles between five bins and ten.  I
+quoted that section in the commit that fixed the threshold and then compared
+across binning schemes anyway.
+
+*The gate is not being relaxed.*  Moving it to five bins now would be exactly
+the move the pre-registration existed to prevent, and the number it would
+produce is one the document already says is biased low by coarse bins.  P3 is
+recorded as failing.
+
+*** What the run does establish
+
+- *Temperature improves the proper score and not the binned one.*  NLL falls
+  from 0.3830 to 0.3610 while ECE rises from 0.0772 to 0.0796.  The two
+  disagree because a proper score reads every probability and a binned
+  statistic reads bin averages; with 17 examples per bin the binning is the
+  noisier instrument.  Reported as measured rather than resolved.
+
+- *Vector scaling buys nothing here, and the adoption rule caught that.*  The
+  fitted intercept is -0.005 and it moves *zero* of 84 answers.  The rule --
+  adopt only on an ECE gain of 0.005 with no accuracy cost -- returns "keep
+  temperature", which is the right answer for a reason the rule states rather
+  than a judgement made after the fact.
+
+- *Calibration is worse where the task is harder*, which is the honesty
+  clause paying for itself:
+
+  | subset after temperature | accuracy |    ECE |  n |
+  |--------------------------+----------+--------+----|
+  | antonym pairs            |    0.944 | 0.0798 | 36 |
+  | compositional pairs      |    0.792 | 0.1138 | 48 |
+
+  A confidence-gated caller would be most misled exactly where the decision is
+  hardest.  That is the single most actionable number in this phase.
+
+- *The negative control is red.*  The 4x-overconfident stub scores 0.1758 and
+  fails the same gate at the same bin count in the same run; the
+  calibrated-by-construction stub scores 0.0198 and passes.  The gate
+  discriminates.
+
+- The reliability table names the cost: one sparse bin, 0.50-0.60, holds 7
+  examples at mean confidence 0.574 and accuracy 0.286 -- a gap of 0.288
+  carrying a large share of the total.
+
+*** What would legitimately change the verdict
+
+More held-out data, or a bin count justified by =n= and fixed *before* the
+next run.  Both are honest; choosing between them after seeing this table is
+not, so the choice belongs to whoever starts the next phase, in writing, first.
+
+A rule of thumb worth pre-registering rather than inventing later: bins such
+that the expected count per occupied bin stays above roughly 30, which at
+n=84 means about three.  That is a smaller number than this phase used and it
+would have passed, which is exactly why it must be argued for on its own terms
+and not adopted here.
 
 ** P4 -- integration with anvil (OUT OF SCOPE)
 
