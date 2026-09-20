@@ -69,8 +69,18 @@ of [0,1] and reports a lower bound below chance as though that were news."
       (cons (max 0.0 (- centre half)) (min 1.0 (+ centre half))))))
 
 (defun nso-argmax (probs)
-  "Index of the largest element of PROBS, first one on a tie."
-  (let ((best -1.0) (idx 0) (i 0))
+  "Index of the largest element of PROBS, first one on a tie.
+
+Seeded from the first element rather than from a constant.  It used to start
+at -1.0, which is below every probability and therefore correct for the input
+the name promises -- and silently wrong for anything else: handed a list whose
+every entry fell below -1.0, it never updated and returned index 0.  Nothing
+enforced the precondition, so the first caller to pass LOGITS got a plausible
+answer instead of an error, and the failure showed up as 19 apparent order
+reversals under a transformation that cannot reverse anything.  A default that
+is only correct for the documented input is a trap for the undocumented one."
+  (unless probs (error "nso: argmax of an empty list"))
+  (let ((best (car probs)) (idx 0) (i 0))
     (dolist (p probs)
       (when (> p best) (setq best p idx i))
       (setq i (1+ i)))

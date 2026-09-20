@@ -1154,6 +1154,92 @@ What this does not establish: anything about deployment, anything about messy
 input, and the retained head's calibration, which is named above as an open
 item rather than quietly borrowed from the head that was dropped.
 
+**** Calibration of the retained head -- pre-registered 2026-09-21
+
+Written and committed before the calibrator was run on the encoded states, and
+it closes the open item the verdict above names.  The subject is the *nominal*
+head, the one gate 2 selected; the ordinal head's calibration is already
+reported and belongs to a head that was dropped.
+
+***** What is measured, and why it is not ECE
+
+P3 established that ECE is not measurable on a held-out split this size: at
+n=84 a model calibrated by construction scores 0.043-0.115 depending on bin
+count, against a gate of 0.05.  Held out here is 75, so the same objection
+applies with slightly more force.  The statistic is therefore P3's binning-free
+one:
+
+: CALIBRATION GAIN = NLL(uncorrected) - NLL(recalibrated)
+
+with the recalibrator fitted out of fold, and judged against the band a
+calibrated-by-construction model produces at the same split sizes.  A model
+that needs no correction has nothing for the recalibrator to find, so its gain
+sits near zero -- slightly below it, because applying a noisy correction to
+fresh data costs a little.
+
+***** The two questions, kept apart
+
+P3 found that the rule as first written did not say which of two things it was
+asking, and that the distinction decided the verdict.  Both are asked here:
+
+- *A -- was the raw output calibrated?*  The out-of-fold temperature's gain on
+  held-out answers it.  A gain outside the band means the recalibrator found
+  real work, so the raw output was not calibrated.
+- *B -- is the output calibrated after the temperature is applied?*  This is
+  the acceptance question, because the phase ships a corrected model.
+
+B cannot be answered by refitting on the same logits the first temperature saw:
+the first is the minimiser there, so a second returns exactly 1 and the residual
+gain is zero by construction rather than by merit.  It needs a split the first
+calibrator never touched.
+
+***** The split, fixed now
+
+Held out is five scenarios: 3, 6, 9, 12, 15.  For question B the residual
+calibrator is fitted on *scenarios 6 and 12* (30 examples) and the residual gain
+is measured on *scenarios 3, 9 and 15* (45 examples).  By scenario, never
+within one, for the reason every split here is by scenario.
+
+Both bands are computed at the sizes they are compared against -- fit 165 /
+eval 75 for A, fit 30 / eval 45 for B -- and *not* reused between them.
+Comparing a statistic taken at one n against a floor taken at another is the
+error that sank P3's ECE gate and it is not repeated.
+
+***** The gates
+
+- *Gate 0, convergence.*  The head and every out-of-fold head must finish below
+  a gradient norm of 0.05.  Void otherwise, on the same terms that voided two
+  probe runs.
+- *Gate 1, the instrument can see.*  The 4x-overconfident control must fall
+  entirely outside the calibrated band, in the same run, at both split sizes.
+  If the two overlap, the statistic is blind here and no verdict is read from
+  it -- a band that admits everything is not evidence.
+- *Gate 2, acceptance.*  Question B's residual gain falls inside the 5-95% band
+  of the calibrated-by-construction model at n=45.
+
+***** Reported, not gated
+
+- Question A's verdict, which is informative either way and is not the
+  acceptance question.
+- Accuracy before and after the temperature.  These must be *equal*: dividing
+  every logit by a positive number preserves their order, so the argmax cannot
+  move.  That is the property §4.2 assumes and the ordinal head broke, and it
+  holds for the softmax -- =test/score-test.el= checks it over 3200 cases at
+  four temperatures.  If the real run disagrees, the run is wrong, not the
+  proof.
+- ECE, with its bin count and n printed beside it, so it cannot be quoted
+  against a figure measured under a different scheme.
+- The fitted temperature and whether it rests on a search bound.
+
+***** What would make this fail
+
+Stated in advance so the result cannot be read as unfalsifiable: a temperature
+far from 1 with question A's gain far outside its band, followed by a residual
+gain that is *also* outside the band at n=45, would mean the correction did not
+land and Score ships an uncalibrated head.  That is a real possibility -- the
+ordinal head's own temperature came back at 4.24 with a gain of +1.09 against a
+band of [-0.022, +0.011], which is exactly that picture before correction.
+
 
 ** P3 -- calibration proper
 

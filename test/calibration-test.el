@@ -243,6 +243,16 @@
     (message "  for contrast, ECE at n=84 / 10 bins on a calibrated stub: %.4f" ece-floor)
     (nso-t-gt "while ECE at this n cannot even reach its own gate" ece-floor 0.05)))
 
+;; argmax on values that are not probabilities.  The function is named for
+;; probabilities and was seeded with a constant below all of them; these are
+;; the inputs that seeding could not handle, and one of them cost an afternoon
+;; of believing a monotone transformation had reversed an order.
+(nso-t-num "argmax of all-negative values picks the largest, not the first"
+           (nso-argmax '(-5.0 -2.0 -9.0)) 1 0.5)
+(nso-t-num "argmax of values below the old -1.0 seed" (nso-argmax '(-3.0 -4.0)) 0 0.5)
+(nso-t-num "argmax still works on probabilities" (nso-argmax '(0.1 0.7 0.2)) 1 0.5)
+(nso-t-signals "argmax refuses an empty list" (lambda () (nso-argmax nil)))
+
 (nso-t-done "calibration")
 
 ;;; calibration-test.el ends here

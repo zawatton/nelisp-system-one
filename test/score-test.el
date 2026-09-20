@@ -430,6 +430,109 @@
               t-oof t-in)
     (message "    T out-of-fold %.2f against in-fold %.2f" t-oof t-in)))
 
+;;; --- calibration for the head Score actually ships -------------------------
+;;
+;; The nominal head won gate 2, so its calibration is the one that matters.
+;; Three things are checked, and the first is the one the ordinal temperature
+;; failed: a multiclass temperature divides every logit by the same positive
+;; number, which preserves their order, so it CANNOT change the answer.  That
+;; is the property section 4.2 assumes when it calls temperature free, and it
+;; is checked here rather than assumed because assuming it by analogy is
+;; exactly how the ordinal head's commentary came to be wrong.
+
+(let* ((rng (nso-rng 606))
+       (k 5)
+       (logits nil) (ys nil))
+  ;; Calibrated by construction: labels drawn from the distribution the logits
+  ;; report, so an honest temperature is 1.
+  (dotimes (_ 800)
+    (let* ((z (let ((v (make-vector k 0.0)))
+                (dotimes (j k) (aset v j (* 4.0 (- (nso-rng-float rng) 0.5))))
+                v))
+           (p (nso-softmax-vec z))
+           (u (nso-rng-float rng))
+           (acc 0.0) (lab (1- k)) (done nil))
+      (dotimes (j k)
+        (unless done
+          (setq acc (+ acc (aref p j)))
+          (when (>= acc u) (setq lab j done t))))
+      (push z logits) (push lab ys)))
+  (setq logits (nreverse logits) ys (nreverse ys))
+  ;; 1. answer preservation, which is the whole reason temperature is reached
+  ;;    for first.
+  ;;
+  ;; The property holds, and getting here took a detour worth recording.  The
+  ;; first version of this check reported 19 of 3200 answers moved, and the
+  ;; conclusion drawn was that the guarantee needed weakening to "no pair
+  ;; REVERSES, but a tie can break the other way".  That conclusion was wrong:
+  ;; the 19 came from `nso-argmax', which was seeded at -1.0 -- below every
+  ;; probability, which is the input its name promises, and above many a logit.
+  ;; Handed five logits that were all below -1.0, it returned index 0 whatever
+  ;; they said.  The helper is fixed and the count is zero.
+  ;;
+  ;; The lesson is not about argmax.  A measurement that disagrees with simple
+  ;; mathematics is first evidence about the measurement, and the reflex to
+  ;; weaken the claim until it matches the number is how a real defect gets
+  ;; written into a docstring as a caveat.
+  (let ((reversed 0) (moved 0))
+    (dolist (temp '(0.1 0.3 2.0 9.0))
+      (let ((scaled (nso-score-nominal-scale logits temp))
+            (a logits))
+        (dolist (z scaled)
+          (let* ((was (nso-argmax (append (car a) nil)))
+                 (now (nso-argmax (append z nil))))
+            (unless (= was now)
+              (setq moved (1+ moved))
+              (unless (= (aref z was) (aref z now))
+                (setq reversed (1+ reversed)))))
+          (setq a (cdr a)))))
+    (nso-t "a multiclass temperature reverses no pair of logits" (= reversed 0)
+           (format "%d reversals of %d" reversed (* 4 (length logits))))
+    (nso-t "and so changes no answer at all" (= moved 0)
+           (format "%d moved of %d" moved (* 4 (length logits)))))
+  ;; 2. an honest fit on an honest model
+  (let ((fit (nso-score-nominal-temperature-fit logits ys)))
+    (nso-t "temperature on a calibrated-by-construction softmax lands near one"
+           (and (> (plist-get fit :temperature) 0.8)
+                (< (plist-get fit :temperature) 1.25))
+           (format "T = %.3f" (plist-get fit :temperature)))
+    (nso-t "and is not resting on a bound" (not (plist-get fit :saturated))))
+  ;; 3. it can see an overconfident model, in the direction that can fail
+  (let* ((sharp (nso-score-nominal-scale logits 0.25))
+         (fit (nso-score-nominal-temperature-fit sharp ys)))
+    (nso-t-gt "a 4x-overconfident softmax needs a temperature above one"
+              (plist-get fit :temperature) 2.5)
+    (nso-t-lt "and recalibrating recovers NLL"
+              (plist-get fit :nll-after) (plist-get fit :nll-before))))
+
+;; Out of fold, same leak check as the ordinal path: on noise with random
+;; labels the head memorises its training split, so an in-fold temperature
+;; asks for more confidence and an out-of-fold one asks for less.
+(let* ((rng (nso-rng 6060))
+       (dim 40) (k 5) (ngroups 15)
+       (items nil) (ys nil) (groups nil))
+  (dotimes (g ngroups)
+    (dotimes (_ 3)
+      (push (st--rand-vec rng dim 1.0) items)
+      (push (mod (nso-rng-next rng) k) ys)
+      (push (1+ g) groups)))
+  (setq items (nreverse items) ys (nreverse ys) groups (nreverse groups))
+  (let* ((feat (lambda (_a _b) #'identity))
+         (oof (nso-score-nominal-oof-logits items ys groups feat k 3 400 0.5 0.01))
+         (std (nso-standardizer items))
+         (head (nso-score-nominal-train
+                (mapcar (lambda (v) (nso-standardize std v)) items)
+                ys k 400 0.5 0.01))
+         (infold (mapcar (lambda (v) (nso-score-nominal-logits
+                                      head (nso-standardize std v)))
+                         items))
+         (t-oof (plist-get (nso-score-nominal-temperature-fit oof ys) :temperature))
+         (t-in (plist-get (nso-score-nominal-temperature-fit infold ys) :temperature)))
+    (nso-t-num "out-of-fold logits come back one per item"
+               (length oof) (length items) 0.5)
+    (nso-t-gt "and need a flatter temperature than the in-fold ones" t-oof t-in)
+    (message "    nominal T out-of-fold %.2f against in-fold %.2f" t-oof t-in)))
+
 ;;; --- the typed answer -----------------------------------------------------
 
 (let* ((levels '("ruled out" "unlikely" "uncertain" "likely" "certain"))

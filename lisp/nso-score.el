@@ -644,6 +644,105 @@ Returns a list of margin vectors aligned with ITEMS."
       (setq f (1+ f)))
     (append out nil)))
 
+;;; Calibration for the nominal head
+;;
+;; The head Score actually ships, after §3.3's ordinal form lost gate 2.  Its
+;; temperature is the ordinary multiclass one -- p = softmax(z / T) -- and it
+;; differs from the ordinal temperature above in the property that matters:
+;; dividing every logit by a positive T preserves their ORDER, so the argmax
+;; is untouched and the correction cannot spend accuracy.  That is the
+;; property §4.2 assumes and the ordinal head broke.  It is a claim about this
+;; code, so `test/score-test.el' checks it rather than repeating it.
+
+(defun nso-score-nominal-scale (logits temp)
+  "LOGITS with every entry divided by TEMP."
+  (mapcar (lambda (z)
+            (let ((v (make-vector (length z) 0.0)))
+              (dotimes (k (length z)) (aset v k (/ (aref z k) temp)))
+              v))
+          logits))
+
+(defun nso-score-nominal-temperature-nll (logits ys temp)
+  "Mean categorical NLL of LOGITS divided by TEMP against YS."
+  (let ((n 0) (sum 0.0) (rest ys))
+    (dolist (z logits)
+      (let ((zt (make-vector (length z) 0.0)))
+        (dotimes (k (length z)) (aset zt k (/ (aref z k) temp)))
+        (let ((p (nso-softmax-vec zt)))
+          (setq sum (+ sum (- (log (max nso-score-prob-floor (aref p (car rest))))))
+                n (1+ n) rest (cdr rest)))))
+    (/ sum n)))
+
+(defun nso-score-nominal-temperature-fit (logits ys &optional lo hi iters)
+  "Fit a multiclass temperature to LOGITS/YS by golden-section search.
+Same contract as `nso-temperature-fit', including `:saturated'."
+  (let* ((lo (or lo 0.05))
+         (hi (or hi 20.0))
+         (iters (or iters 80))
+         (lo0 lo) (hi0 hi)
+         (phi 0.6180339887498949)
+         (c (- hi (* phi (- hi lo))))
+         (d (+ lo (* phi (- hi lo))))
+         (fc (nso-score-nominal-temperature-nll logits ys c))
+         (fd (nso-score-nominal-temperature-nll logits ys d))
+         (i 0))
+    (while (< i iters)
+      (if (< fc fd)
+          (progn (setq hi d d c fd fc)
+                 (setq c (- hi (* phi (- hi lo))))
+                 (setq fc (nso-score-nominal-temperature-nll logits ys c)))
+        (setq lo c c d fc fd)
+        (setq d (+ lo (* phi (- hi lo))))
+        (setq fd (nso-score-nominal-temperature-nll logits ys d)))
+      (setq i (1+ i)))
+    (let ((temp (/ (+ lo hi) 2.0)))
+      (list :temperature temp
+            :saturated (or (< temp (* 1.001 lo0)) (> temp (* 0.999 hi0)))
+            :bounds (cons lo0 hi0)
+            :nll-before (nso-score-nominal-temperature-nll logits ys 1.0)
+            :nll-after (nso-score-nominal-temperature-nll logits ys temp)))))
+
+(defun nso-score-nominal-oof-logits (items ys groups featurizer k
+                                           &optional folds steps lr l2)
+  "Out-of-fold logit vectors for ITEMS/YS, folded by GROUPS.
+
+The nominal counterpart of `nso-score-oof-margins', and it exists for the same
+reason: a temperature fitted on logits the head has already separated comes
+back sharpening a model about to meet data it has not seen.  The feature map
+is rebuilt inside each fold, not around it."
+  (let* ((ngroups (let ((h (make-hash-table :test 'equal)))
+                    (dolist (g groups) (puthash g t h))
+                    (hash-table-count h)))
+         (folds (max 2 (min (or folds 3) ngroups)))
+         (map (nso-probe-fold-map groups folds))
+         (n (length items))
+         (out (make-vector n nil))
+         (f 0))
+    (while (< f folds)
+      (let ((fit nil) (fy nil) (hold nil) (hi nil) (i 0) (rg groups) (ry ys))
+        (dolist (x items)
+          (if (= f (gethash (car rg) map))
+              (progn (push x hold) (push i hi))
+            (push x fit) (push (car ry) fy))
+          (setq i (1+ i) rg (cdr rg) ry (cdr ry)))
+        (setq fit (nreverse fit) fy (nreverse fy)
+              hold (nreverse hold) hi (nreverse hi))
+        (unless (and fit hold)
+          (error "nso-score-nominal-oof-logits: fold %d left a side empty" f))
+        (let* ((feat (funcall featurizer fit fy))
+               (fx (mapcar feat fit))
+               (std (nso-standardizer fx))
+               (head (nso-score-nominal-train
+                      (mapcar (lambda (v) (nso-standardize std v)) fx)
+                      fy k (or steps 6000) (or lr 0.5) (or l2 0.01)))
+               (rt hi))
+          (dolist (x hold)
+            (aset out (car rt)
+                  (nso-score-nominal-logits head (nso-standardize std (funcall feat x))))
+            (setq rt (cdr rt)))))
+      (setq f (1+ f)))
+    (append out nil)))
+
 (defun nso-score-scale-margins (margins temp)
   "MARGINS with every entry divided by TEMP."
   (mapcar (lambda (z)
