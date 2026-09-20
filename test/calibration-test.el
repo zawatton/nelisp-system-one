@@ -21,6 +21,7 @@
 
 (require 'nso-metrics)
 (require 'nso-stub)
+(require 'nso-head)                    ; nso-sigmoid, the temperature fit
 (load (expand-file-name "nso-test-helper.el"
                         (file-name-directory (or load-file-name buffer-file-name))))
 
@@ -181,6 +182,66 @@
                   (dolist (row (plist-get r :table))
                     (setq s (+ s (plist-get row :n))))
                   s))))
+
+
+;;; --- a calibration statistic that works at small n -----------------------
+;;
+;; ECE could not be measured on the P1 held-out split: at n=84 a stub that is
+;; calibrated BY CONSTRUCTION reports 0.043 to 0.082 depending on bin count,
+;; against a gate of 0.05.  The binning is the floor.
+;;
+;; The recalibration gain has no bins:
+;;
+;;   gain = NLL(uncorrected) - NLL(recalibrated)
+;;
+;; with the recalibrator fitted on a separate split.  A model that needs no
+;; correction has nothing to gain, and in fact loses a little, because a
+;; temperature fitted on finite data is noisy and applying a noisy correction
+;; to fresh data costs something.  A miscalibrated one gains in proportion to
+;; how wrong it was.  These checks pin both directions at the n where ECE
+;; failed.
+
+(defun ct--gain-draw (rng n sharpen)
+  "N logit/label pairs; labels from the UNSHARPENED logit."
+  (let ((zs nil) (ys nil))
+    (dotimes (_ n)
+      (let* ((z (* 4.0 (- (nso-rng-float rng) 0.5)))
+             (y (if (< (nso-rng-float rng) (nso-sigmoid z)) 1.0 0.0)))
+        (push (* sharpen z) zs) (push y ys)))
+    (cons (nreverse zs) (nreverse ys))))
+
+(defun ct--gain (rng sharpen)
+  (let* ((tr (ct--gain-draw rng 168 sharpen))
+         (te (ct--gain-draw rng 84 sharpen))
+         (temp (plist-get (nso-temperature-fit (car tr) (cdr tr)) :temperature)))
+    (- (nso-platt-nll (car te) (cdr te) 1.0 0.0)
+       (nso-platt-nll (car te) (cdr te) (/ 1.0 temp) 0.0))))
+
+(let* ((rng (nso-rng 4242))
+       (mean (lambda (sharpen draws)
+               (let ((s 0.0) (i 0))
+                 (while (< i draws) (setq s (+ s (ct--gain rng sharpen)) i (1+ i)))
+                 (/ s draws))))
+       (g-cal (funcall mean 1.0 120))
+       (g-over (funcall mean 4.0 120)))
+  (message "  recalibration gain at n=84: calibrated %+.4f, 4x overconfident %+.4f"
+           g-cal g-over)
+  ;; The sign is the point: a correction fitted for a model that needs none is
+  ;; noise, and noise applied to fresh data costs rather than pays.
+  (nso-t-lt "a calibrated model gains nothing from recalibration" g-cal 0.01)
+  (nso-t-gt "a 4x-overconfident one gains a great deal" g-over 0.2)
+  (nso-t-gt "and the two are separated by more than an order of magnitude"
+            g-over (* 10.0 (max 0.001 (abs g-cal))))
+  ;; The contrast with ECE at the same n, which is the reason this exists.
+  (let ((ece-floor (let ((s 0.0) (i 0))
+                     (while (< i 40)
+                       (setq s (+ s (plist-get (nso-ece (nso-stub-calibrated
+                                                         (+ 500 i) 84 2) 10)
+                                               :ece))
+                             i (1+ i)))
+                     (/ s 40))))
+    (message "  for contrast, ECE at n=84 / 10 bins on a calibrated stub: %.4f" ece-floor)
+    (nso-t-gt "while ECE at this n cannot even reach its own gate" ece-floor 0.05)))
 
 (nso-t-done "calibration")
 
