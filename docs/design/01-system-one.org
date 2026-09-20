@@ -846,11 +846,162 @@ demanded that raw features blow the loss up threefold, and the synthetic only
 loses half the fit rather than diverging outright.  It now asserts the effect
 that reproduces.
 
-*** Score
+*** Score -- pre-registered 2026-09-20, before the encode ran
 
-Not started.  Choice is the acceptance criterion's first clause and it is not
-met; taking the ordinal head on before the state/option geometry is understood
-would be building on a foundation this phase has just found unsound.
+**** The reason this was deferred does not apply to it
+
+This section previously read "not started", on the grounds that Choice had
+failed and building the ordinal head on an unsound foundation would be
+premature.  That reasoning was wrong, and it is worth saying why rather than
+just proceeding.
+
+Choice failed at a specific thing: aligning *option embeddings* with *state
+embeddings* in one space, through a diagonal bilinear form, when both come out
+of the same frozen causal encoder whose states have mean pairwise cosine 0.923.
+Score has no option embeddings.  Its legend is fixed, and the levels enter the
+model as K-1 scalar cutpoints fitted alongside a single weight vector.  There
+is no cone to align and no per-query option set to generalise over.  The two
+primitives share a commentary in §2 and almost nothing in their failure modes.
+
+Deferring Score because Choice failed was reasoning from "they are both in P2"
+rather than from what either actually does.
+
+**** What was built
+
+=lisp/nso-score.el=, a cumulative-link head exactly as §3.3 specifies:
+
+: f(x) = w . x        c_k = sigma(theta_k - f)        p_k = c_k - c_{k-1}
+
+with =dim + (K-1)= parameters against a nominal softmax's =K*dim=.  Two
+decisions worth recording because they are not free:
+
+- *Ordering is enforced by construction*, =theta_k = theta_{k-1} +
+  softplus(d)=, so a non-distribution is unrepresentable rather than merely
+  penalised.  That is claim (a)'s move, made in the parameterisation instead of
+  at the boundary.  A penalty would have left the failure possible and silent.
+- *No bias in f.*  A constant added to f shifts every cutpoint equally, so a
+  bias makes the parameterisation non-identifiable and hands gradient descent a
+  flat direction.  Two runs would then differ for a reason that is not the
+  data.
+
+The gradient is derived by hand and =test/score-test.el= checks it against
+central finite differences on every parameter block before checking anything
+downstream of it.
+
+**** Two defects the build found
+
+Neither is about Score.  Both had been sitting in shipped code.
+
+1. *The type gate was blind to Score.*  =nso--validate-choice= read the answer
+   under =:choice=; §2 gives Score the signature =:score=.  So a well-formed
+   Score answer was rejected and an ill-formed one -- reported under the wrong
+   key -- was accepted.  The P0 suite agreed with the gate, because its three
+   Score checks were written from the implementation and two of them only ever
+   asked the gate to say no.  A suite written from the implementation cannot
+   find a disagreement with the specification, however much of it there is.
+   Fixed by =nso--answer-key=; the suite now checks the accept direction and
+   checks that each rejection names the right reason.
+
+2. *An ordinal temperature can change the answer.*  §4.2 relies on temperature
+   being monotone in the logit, so it buys calibration without spending
+   accuracy.  That does not carry over: here each probability is the increment
+   of sigma across an interval, and dividing every margin by T rescales all the
+   intervals at once, so which interval collects the most mass moves.  Margins
+   =(-10, -3, 0.1, 0.2)= report level 2 at T=1 and level 4 at T=5.  The
+   commentary claimed the opposite by analogy with the binary case, and the
+   test caught it.  Consequence for this phase: accuracy is reported on both
+   sides of any temperature.
+
+**** The dataset, and a bound rather than a hope
+
+=data/score-commitment.eld=: 16 scenarios x 15 sentences = 240 examples, exactly
+48 per level and exactly 3 per level per scenario, so the majority baseline is
+0.200 and the best constant answer is the middle level at 1.200 MAE.  Split by
+scenario, every third held out: 165 train, 75 held out.
+
+The hard half is built so that a bag of words provably cannot do well.  Every
+hard sentence has a partner in its own scenario whose *set of words is
+identical*, because the matrix clause already carries "not" and flipping the
+embedded clause's polarity adds a second one that a set-valued bag cannot see:
+
+| sentence                                  | level     |
+|-------------------------------------------+-----------|
+| I do not doubt that E will arrive         | certain   |
+| I do not doubt that E will not arrive     | ruled out |
+| It is not true that E will arrive         | ruled out |
+| It is not true that E will not arrive     | certain   |
+| It is not unlikely that E will arrive     | likely    |
+| It is not unlikely that E will not arrive | unlikely  |
+
+Two inputs a model cannot distinguish must receive the same answer, so each
+unequal pair yields at most one correct answer.  That bounds *any* bag-of-words
+model, at any capacity, at **0.600 accuracy and 1.200 MAE** on the hard subset
+-- and 1.200 is the constant answer's MAE, so on that half a bag of words can
+do no better than ignoring the sentence.  The generator recomputes the bound
+from the sentences and refuses to emit a file whose hard half is not fully
+paired.
+
+=tools/score-lexical-check.el= measured it before any GPU time was spent: the
+nominal head on unigrams reaches exactly 0.600 and 1.200.  The bound is tight,
+which is what makes anything above it evidence of word order.
+
+***** The third time a check fired without measuring the right quantity
+
+The first version of this dataset used "no doubt" against "no chance" and
+claimed a bag of words could not separate them.  The generator's check agreed
+-- it compared the *negation words present*, ignoring that "doubt" and "chance"
+are themselves features.  The claim held for a single shared score, which is
+what the ordinal head has, and failed for one weight vector per level: a
+five-way softmax scored 0.800 on that subset.  The check fired on what it
+measured and was measuring the wrong thing, which is now the third instance in
+this repository (§10.6, fault 3).  The lexical pre-flight caught it in seconds
+instead of after an hour of encoding, which is the only reason it is a
+paragraph here rather than a retraction below a results table.
+
+The replacement is a bound rather than an argument, which is the difference
+that matters: it does not have to be re-argued when someone fits something
+bigger.
+
+**** Pre-registered acceptance
+
+Committed before the encode runs.  One configuration, fixed now so the result
+is not the best of six: *mid layer (13), last-token pooling* -- what P1
+shipped.  Both heads trained on identical standardised features with identical
+steps, learning rate and L2.
+
+- *Gate 0, convergence.*  Both heads must finish with gradient norm below 0.05.
+  If either does not, the comparison is void and reported as void rather than
+  reported.  Four results in this repository turned out to be measurements of
+  an unconverged optimiser.
+- *Gate 1, the negative control (§4.4, mandatory).*  The same pipeline on
+  shuffled levels must reach chance accuracy and no better than the constant
+  answer's MAE.  If it does not, nothing else here is read.
+- *Gate 2, the ordinal claim.*  §3.3 requires the cumulative-link head to beat
+  the plain softmax on an ordinal task "or drop it".  Accepted when the 95%
+  paired bootstrap interval for =MAE(nominal) - MAE(ordinal)= excludes zero in
+  the ordinal head's favour.  If it excludes zero the other way, the ordinal
+  head is dropped and §3.3 is rewritten; if it straddles zero, §3.3's claim is
+  unsupported at this n and that is what gets written.
+- *Gate 3, composition.*  Held-out MAE on the *hard subset* strictly below
+  1.200, with the upper end of its 95% bootstrap interval also below 1.200.
+  1.200 is not a chosen threshold: it is the floor the pairing imposes on every
+  bag-of-words model.  Accuracy against the 0.600 ceiling is reported as a
+  secondary reading, not a second chance to pass.
+
+Reported, and explicitly *not* gates:
+
+- Calibration, by P3's binning-free gain against a calibrated-by-construction
+  band at n=75.  ECE is not used: P3 established it is unmeasurable at this
+  size, and no threshold set now, after the head exists, would be a
+  pre-registration.  Accuracy and MAE are reported before and after the
+  temperature, because here it can change them.
+- The fraction of held-out distributions that are unimodal.  The
+  parameterisation does not guarantee it and the commentary does not claim it.
+- MAE under the mode against MAE under the median.  §2's shared contract
+  requires the argmax; the median is what minimises absolute error.  If the
+  median wins, that is a cost of the shared contract and belongs in §2.
+- The easy subset, from which nothing is claimed: a unigram nominal head
+  already scores 1.000 on it.
 
 
 ** P3 -- calibration proper

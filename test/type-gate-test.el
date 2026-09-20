@@ -128,13 +128,31 @@
   (nso-t-red "a missing p-yes is rejected"
              (nso-type-gate q '(:confidence 0.5))))
 
+;; Score reports its answer under `:score', which is section 2's signature.
+;;
+;; These three checks were written against `:choice' when P0 landed, because
+;; that is what the validator read, and they were green for a year of work: a
+;; well-formed Score answer was ACCEPTED under the wrong key and REJECTED
+;; under the right one, and no test asked for the right one because no Score
+;; head existed to produce it.  The suite and the gate agreed with each other
+;; and neither agreed with the design document.  The lesson is narrower than
+;; "write more tests": a suite written from the implementation cannot find a
+;; disagreement with the spec, however much of it there is.
 (let ((q (nso-make-score "how complete is this record?" '(poor fair good))))
   (nso-t-green "a well-formed Score answer is accepted"
-               (nso-type-gate q '(:choice good
+               (nso-type-gate q '(:score good
                                   :probabilities ((poor . 0.1) (fair . 0.3)
                                                   (good . 0.6)))))
   (nso-t-red "a level outside the legend is rejected"
-             (nso-type-gate q '(:choice excellent
+             (nso-type-gate q '(:score excellent
+                                :probabilities ((poor . 0.1) (fair . 0.3)
+                                                (good . 0.6)))))
+  (nso-t-red "a Score answer that reports under :choice is rejected"
+             (nso-type-gate q '(:choice good
+                                :probabilities ((poor . 0.1) (fair . 0.3)
+                                                (good . 0.6)))))
+  (nso-t-red "a level that is not the argmax of its own distribution is rejected"
+             (nso-type-gate q '(:score poor
                                 :probabilities ((poor . 0.1) (fair . 0.3)
                                                 (good . 0.6))))))
 

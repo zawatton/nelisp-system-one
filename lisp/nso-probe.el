@@ -107,17 +107,11 @@ sentences is a leak, even though the labels never enter it."
 ;;; Scoring
 
 (defun nso-probe-wilson (k n &optional z)
-  "Wilson score interval for K successes in N trials.  Returns (LO . HI)."
-  (if (= n 0) (cons 0.0 1.0)
-    (let* ((z (or z 1.959963984540054))
-           (p (/ (float k) n))
-           (zz (* z z))
-           (den (+ 1.0 (/ zz n)))
-           (centre (/ (+ p (/ zz (* 2.0 n))) den))
-           (half (/ (* (/ z den)
-                       (sqrt (+ (/ (* p (- 1.0 p)) n) (/ zz (* 4.0 n n)))))
-                    1.0)))
-      (cons (max 0.0 (- centre half)) (min 1.0 (+ centre half))))))
+  "Wilson score interval for K successes in N trials.  Returns (LO . HI).
+The interval itself is `nso-wilson', in `nso-metrics' where the other
+statistics live; this name is kept because the probe and its tests are written
+in terms of it."
+  (nso-wilson k n z))
 
 (defun nso-probe-samples (probs labels)
   "Build `nso-metrics' samples from P(yes) values PROBS and LABELS."

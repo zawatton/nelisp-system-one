@@ -77,10 +77,24 @@ becomes a quiet wrong number instead of an error."
             (push o seen))))))
     (nreverse violations)))
 
+(defun nso--answer-key (q)
+  "Which key of an answer carries the chosen option for question Q.
+
+Choice and Noul report `:choice'; Score reports `:score', because section 2
+gives it that signature.  One validator covers all three, but only if it looks
+in the right place: reading `:choice' out of a Score answer finds nil and
+rejects it as \"not in the declared option set\", which is a true sentence
+about the wrong thing.  This gate did exactly that from P0 until the ordinal
+head was built, and its own suite agreed with it -- the rejection tests were
+green because every Score answer was rejected, including the valid ones.  A
+gate can be blind to an entire primitive while passing tests that only ever
+ask it to say no."
+  (if (eq (plist-get q :type) 'score) :score :choice))
+
 (defun nso--validate-choice (q a)
   "Return a list of the ways A fails to answer the choice/score question Q."
   (let* ((options (plist-get q :options))
-         (choice (plist-get a :choice))
+         (choice (plist-get a (nso--answer-key q)))
          (probs (plist-get a :probabilities))
          (conf (plist-get a :confidence))
          (violations nil))

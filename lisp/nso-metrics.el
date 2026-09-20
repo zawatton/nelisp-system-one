@@ -53,6 +53,21 @@
       (error "nso: sample label %S out of range for %d options"
              label (length probs)))))
 
+(defun nso-wilson (k n &optional z)
+  "Wilson score interval for K successes in N trials.  Returns (LO . HI).
+The Wilson form rather than the normal approximation because the accuracies
+here sit on small held-out splits, where the normal interval runs off the end
+of [0,1] and reports a lower bound below chance as though that were news."
+  (if (= n 0) (cons 0.0 1.0)
+    (let* ((z (or z 1.959963984540054))
+           (p (/ (float k) n))
+           (zz (* z z))
+           (den (+ 1.0 (/ zz n)))
+           (centre (/ (+ p (/ zz (* 2.0 n))) den))
+           (half (* (/ z den)
+                    (sqrt (+ (/ (* p (- 1.0 p)) n) (/ zz (* 4.0 n n)))))))
+      (cons (max 0.0 (- centre half)) (min 1.0 (+ centre half))))))
+
 (defun nso-argmax (probs)
   "Index of the largest element of PROBS, first one on a tie."
   (let ((best -1.0) (idx 0) (i 0))
