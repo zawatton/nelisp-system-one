@@ -21,8 +21,19 @@
 
 (unless (file-directory-p nso-cd--out) (make-directory nso-cd--out t))
 
-(dolist (d '("nelisp-photon/lisp" "nelisp-gpu/lisp" "nelisp-llm/lisp"))
+;; NSO_LLM_ROOT pins nelisp-llm to a checkout other than the one beside this
+;; repository -- see the commentary in tools/score-encode-probe.el.  The cache
+;; has to be built from whatever tree will actually be loaded, or build/elc
+;; ends up holding one version's byte code beside another version's source,
+;; which is the shape of the failure that made the pin necessary.
+(defvar nso-cd--llm-lisp
+  (expand-file-name "lisp"
+                    (or (getenv "NSO_LLM_ROOT")
+                        (expand-file-name "../../nelisp-llm" nso-cd--here))))
+
+(dolist (d '("nelisp-photon/lisp" "nelisp-gpu/lisp"))
   (add-to-list 'load-path (expand-file-name (concat "../../" d) nso-cd--here)))
+(add-to-list 'load-path nso-cd--llm-lisp)
 (add-to-list 'load-path (expand-file-name "../lisp" nso-cd--here))
 (add-to-list 'load-path nso-cd--out)
 
@@ -42,7 +53,7 @@
   ;; vfork: No such file or directory".  It is also the one layer where
   ;; compiling buys nothing: its time goes into pipe I/O, not arithmetic.
   (dolist (dir (list (expand-file-name "../../nelisp-photon/lisp" nso-cd--here)
-                     (expand-file-name "../../nelisp-llm/lisp" nso-cd--here)))
+                     nso-cd--llm-lisp))
     (when (file-directory-p dir)
       (dolist (f (directory-files dir t "\\.el\\'"))
         (condition-case err

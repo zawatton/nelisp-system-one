@@ -124,8 +124,21 @@ Costs one block, a few seconds, once per run."
          (gpu (nl-llm-wgpu-block lay (copy-sequence x) seq cfg))
          (cpu (nl-llm-wgpu-block-cpu wts layer (copy-sequence x) seq cfg))
          (worst 0.0) (scale 0.0) (nan 0))
-    (dotimes (n (min (length gpu) (length cpu)))
+    ;; A slot that is not a number at all is a different failure from a slot
+    ;; that is wrong, and it must be reported as one.  The first version went
+    ;; straight to `(/= a a)', which signals `number-or-marker-p, nil' from
+    ;; inside this function and names neither the side nor the index -- a bare
+    ;; wrong-type error that took five wrong guesses to place.
+    (unless (= (length gpu) (length cpu))
+      (error "nso-encode: layer %d returned %d values on the GPU and %d on the CPU"
+             layer (length gpu) (length cpu)))
+    (dotimes (n (length gpu))
       (let ((a (aref gpu n)) (b (aref cpu n)))
+        (unless (and (numberp a) (numberp b))
+          (error (concat "nso-encode: layer %d slot %d of %d is not a number "
+                         "(gpu %S, cpu %S) -- the block returned an "
+                         "uninitialised vector, not a wrong one")
+                 layer n (length gpu) a b))
         (when (or (/= a a) (/= b b)) (setq nan (1+ nan)))
         (setq scale (max scale (abs b))
               worst (max worst (abs (- a b))))))

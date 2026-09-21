@@ -65,6 +65,11 @@ p1: compile deps
 # p1 does; NSO_SCORE_STAGE selects tokenize / encode / probe / all.  The probe
 # path is exercised without a GPU by tools/score-fake-states.el, in both the
 # signal and the noise mode, which is what says it can report a failure.
+# NSO_LLM_ROOT pins nelisp-llm to a checkout other than the one beside this
+# repository, for both the deps build and the run -- see the commentary in
+# tools/score-encode-probe.el.  Unset, both use the live sibling tree, which
+# is the right default and was also how an encode came to die ninety seconds
+# after that tree gained an uncommitted ternary path.
 score: compile deps
 	$(EMACS) -Q --batch $(FAST) -l tools/score-encode-probe.el
 

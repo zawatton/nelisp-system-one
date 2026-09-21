@@ -31,10 +31,42 @@
 (defun nso-sc--sib (name) (expand-file-name (concat "../../" name) nso-sc--here))
 (defun nso-sc--own (name) (expand-file-name (concat "../" name) nso-sc--here))
 
-(add-to-list 'load-path (nso-sc--own "lisp"))
-(add-to-list 'load-path (nso-sc--own "build/elc"))
-(dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
-  (add-to-list 'load-path (nso-sc--sib d)))
+;;; Pinning the donor's encoder
+;;
+;; NSO_LLM_ROOT points at a checkout of nelisp-llm to load instead of the one
+;; beside this repository.  It exists because the sibling is a live working
+;; tree: an encode here died ninety seconds after that tree gained an
+;; uncommitted ternary path, with a wrong-type error four frames inside the
+;; GPU linear, and nothing about the failure said "somebody else is mid-edit".
+;;
+;; The pin is not a workaround for a bug -- it is what makes the CACHE valid.
+;; build/score-states.eld holds rows encoded by one version of that code, and
+;; adding rows from another version would compare two encoders while calling
+;; them one.  The check that licenses the pin is numeric rather than social:
+;; `nso-encode-check-layer' must return the same relative agreement the cached
+;; rows were produced under, 3.68066e-09, and the run says so in its log.
+
+(defvar nso-sc--llm-root (or (getenv "NSO_LLM_ROOT") (nso-sc--sib "nelisp-llm")))
+
+;; Set in order, front first, rather than by a run of `add-to-list' calls.
+;; add-to-list PREPENDS, so a list written top to bottom is searched bottom to
+;; top, and the first version of this file therefore loaded the sibling
+;; sources interpreted while build/elc sat behind them unused -- twice the
+;; encode time for a cache that was built and then not consulted.  Written out
+;; like this, the order is the order.
+;;
+;;   build/elc   byte-compiled photon and nelisp-llm, from whichever nelisp-llm
+;;               tree the pin selects; this is the speed
+;;   nelisp-gpu  source, always: it finds its vkserver binary relative to
+;;               `load-file-name', which a redirected .elc breaks
+;;   the rest    source, as the fallback for anything build/elc does not hold
+(setq load-path
+      (append (list (nso-sc--own "build/elc")
+                    (nso-sc--sib "nelisp-gpu/lisp")
+                    (expand-file-name "lisp" nso-sc--llm-root)
+                    (nso-sc--sib "nelisp-photon/lisp")
+                    (nso-sc--own "lisp"))
+              load-path))
 
 ;;; A stale sibling cache must not be able to win quietly
 ;;
@@ -58,8 +90,13 @@
     (when (file-directory-p cache)
       (dolist (elc (directory-files cache t "\\.elc\\'"))
         (let ((base (file-name-base elc)))
-          (dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
-            (let ((src (expand-file-name (concat base ".el") (nso-sc--sib d))))
+          ;; Against the trees that will actually be loaded, which is not the
+          ;; same as the trees beside this repository once NSO_LLM_ROOT is set.
+          ;; A guard that checks a directory nobody loads from is decoration.
+          (dolist (dir (list (expand-file-name "lisp" nso-sc--llm-root)
+                             (nso-sc--sib "nelisp-photon/lisp")
+                             (nso-sc--sib "nelisp-gpu/lisp")))
+            (let ((src (expand-file-name (concat base ".el") dir)))
               (when (and (file-readable-p src)
                          (time-less-p (file-attribute-modification-time
                                        (file-attributes elc))
@@ -78,6 +115,8 @@
 (require 'nso-stub)
 
 (defvar nso-sc--stage (or (getenv "NSO_SCORE_STAGE") "all"))
+;; The weights stay where they are: only the CODE is pinned, and the donor
+;; file has not changed since the cached rows were written.
 (defvar nso-sc--donor (nso-sc--sib "nelisp-llm/build/donor/qwen3-0.6b"))
 (defvar nso-sc--build (nso-sc--own "build"))
 (defvar nso-sc--states
@@ -240,6 +279,20 @@ about.")
                          (1+ ly) nlayers (- (float-time) t0))))
         (setq layers (nreverse layers))
         (nso-sc--say "resident load: %.0fs for %d layers" (- (float-time) t0) nlayers)
+        ;; Logged because a run died here with a bare wrong-type-argument on
+        ;; nil, and the first four things ruled out were all downstream of
+        ;; whether these are what they should be.
+        (nso-sc--say "config: dim %S heads %S kv %S head-dim %S layers %S rope %S eps %S"
+                     (plist-get cfg :dim) (plist-get cfg :heads)
+                     (plist-get cfg :kv-heads) (plist-get cfg :head-dim)
+                     (plist-get cfg :layers) (plist-get cfg :rope-base)
+                     (plist-get cfg :rms-eps))
+        (nso-sc--say "layers: %d loaded, first %s, ln1g %s, lins %s"
+                     (length layers) (if (car layers) "non-nil" "NIL")
+                     (if (and (car layers) (nl-llm-wgpu-layer-ln1g (car layers)))
+                         "ok" "NIL")
+                     (if (and (car layers) (nl-llm-wgpu-layer-lins (car layers)))
+                         "ok" "NIL"))
         (when todo
           (nso-sc--say "layer 0 against the CPU reference: rel %g"
                        (nso-encode-check-layer wts 0 (car layers) cfg)))
@@ -641,19 +694,31 @@ about.")
 
 ;;; --- driver ---------------------------------------------------------------
 
-(nso-sc--say "stage: %s" nso-sc--stage)
-(condition-case err
-    (cond
-     ((equal nso-sc--stage "tokenize") (nso-sc-tokenize))
-     ((equal nso-sc--stage "probe")
-      (let ((saved (with-temp-buffer
-                     (insert-file-contents nso-sc--states)
-                     (read (buffer-string)))))
-        (nso-sc-probe (plist-get saved :rows))))
-     (t (nso-sc-probe (nso-sc-encode (nso-sc-tokenize)))))
-  (error
-   (nso-sc--say "FAILED: %s" (error-message-string err))
-   (signal (car err) (cdr err))))
+(nso-sc--say "stage: %s  (nelisp-llm from %s)" nso-sc--stage nso-sc--llm-root)
+
+;; The handler below logs the message and re-signals, which is what makes a
+;; long redirected run diagnosable -- and it also collapses the backtrace to
+;; the condition-case frame, which is what made one failure here take five
+;; wrong guesses to locate.  NSO_SCORE_RAISE=1 skips the handler entirely so
+;; `debug-on-error' can print the frames that matter.
+(defmacro nso-sc--guarded (&rest body)
+  `(if (getenv "NSO_SCORE_RAISE")
+       (progn ,@body)
+     (condition-case err
+         (progn ,@body)
+       (error
+        (nso-sc--say "FAILED: %s" (error-message-string err))
+        (signal (car err) (cdr err))))))
+
+(nso-sc--guarded
+ (cond
+  ((equal nso-sc--stage "tokenize") (nso-sc-tokenize))
+  ((equal nso-sc--stage "probe")
+   (let ((saved (with-temp-buffer
+                  (insert-file-contents nso-sc--states)
+                  (read (buffer-string)))))
+     (nso-sc-probe (plist-get saved :rows))))
+  (t (nso-sc-probe (nso-sc-encode (nso-sc-tokenize))))))
 
 (nso-sc--say "done")
 
