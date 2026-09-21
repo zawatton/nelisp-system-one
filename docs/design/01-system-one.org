@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Score's retained head NOT CALIBRATED under its own pre-registered rule (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Score's retained head CALIBRATED on a re-test with three-way scenario splits, after a first attempt that was underpowered (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
 
 * Status
 
@@ -207,7 +207,9 @@ mechanism that costs complexity and buys nothing measurable does not ship.
 features under identical rules, the cumulative-link head is *worse*: MAE 0.733
 against the nominal softmax's 0.373, a paired bootstrap difference of −0.360
 with a 95% interval of [−0.560, −0.147] that excludes zero in the softmax's
-favour.  The argument above is not wrong about what ordering *is*; it is wrong
+favour.  Re-measured on the enlarged set the gap *widens* to −0.489 [−0.606,
+−0.367] -- a shortfall that grows with data is the wrong constraint rather than
+too little of it.  The argument above is not wrong about what ordering *is*; it is wrong
 about what it *buys here*.
 
 Two readings survive the result and one does not:
@@ -1460,6 +1462,86 @@ of the right kind, and the conclusion would be that this head cannot be
 calibrated by a single temperature -- which is a real finding and a different
 one from "the procedure was pointed at the wrong data".
 
+**** Re-test result -- ACCEPTED (2026-09-21)
+
+| gate | what it asks              | verdict | figure                                  |
+|------+---------------------------+---------+-----------------------------------------|
+|    0 | did the head converge?    | PASS    | \vert g \vert 4.22e-03 in 119 iterations           |
+|    1 | can the statistic see?    | PASS    | control [+0.685, +1.215] clear of the band |
+|    2 | is the corrected output calibrated? | *PASS* | gain −0.0006 in [−0.0222, +0.0049] |
+
+The gain sits well inside the band and far from either percentile's own
+interval -- 5th at [−0.0231, −0.0215], 95th at [+0.0047, +0.0051] -- so the
+three-valued rule returns PASS rather than INDETERMINATE.  The verdict is the
+head's, not the simulation's.
+
+Reported: temperature 0.737 fitted on calibrate; accuracy 0.933 → 0.933 across
+it, *exactly*, as the argmax argument requires; MAE 0.161 → 0.161; NLL 0.1912 →
+0.1918; ECE 0.0243 → 0.0235 at ten bins on n=180, still not a gate.
+
+***** The credit does not obviously belong to the split, so it was measured
+
+The re-test changed two things at once: where the calibrator is fitted, and the
+size of the training set (165 examples to 360).  A PASS cannot apportion those,
+and the temperatures suggested the answer might not be the one the
+pre-registration argued for:
+
+| when          | out-of-fold on train | direct on test | calibrate split |
+|---------------+----------------------+----------------+-----------------|
+| first attempt |                0.946 |          1.313 | --              |
+| re-test       |                0.989 |          0.867 | 0.737           |
+
+In the first attempt those two pointed *opposite* ways, which is exactly what
+the three-way split was designed to fix.  In the re-test they point the same
+way before the split is involved at all -- consistent with the head simply
+being better fitted at 360 examples, its held-out accuracy having gone 0.867 to
+0.950, and the miscalibration having been a symptom of the smaller fit.
+
+So the first attempt's procedure was run again on the new data: the temperature
+fitted out of fold on the full 360-example training split, the gain measured on
+the same test set.
+
+: temperature 0.755   gain +0.0109   band [−0.0094, +0.0042]
+: 95th percentile CI [+0.0039, +0.0044]      control separated
+: FAIL
+
+*It still fails, and clear of the threshold's interval.*  More data does not
+fix it; the held-back calibrate split does.  The suspicion above is refuted and
+the pre-registration's structural argument is the one that survives.
+
+That makes the finding transferable rather than local: *for this head,
+out-of-fold calibration on the training split does not transfer to unseen
+scenarios, and a calibrate split held back from both the head and the test
+does.*  P3's recipe was not wrong for Noul; it was wrong to assume it carried.
+
+**** Score, re-measured at scale
+
+The enlarged set is 540 examples over 36 scenarios, and the encode reused the
+240 rows already on disk -- licensed numerically rather than by assumption, the
+pinned donor code reproducing the same 3.68066e-09 agreement with the CPU
+reference that those rows were written under.
+
+| head / subset  | n=75 (first run) | n=180 (enlarged) | bag-of-words bound |
+|----------------+------------------+------------------+--------------------|
+| nominal, all   |            0.867 |        *0.950*   | --                 |
+| nominal / hard |            0.820 |        *0.942*   | ≤ 0.600            |
+| nominal / easy |            0.960 |            0.967 | 1.000              |
+| ordinal, all   |            0.400 |            0.467 | --                 |
+
+MAE on the hard subset falls from 0.520 to *0.167*, against a floor of 1.200
+that no bag of words can go below.  The Wilson interval on 0.942 is
+[0.884, 0.971]; its lower end is half again the ceiling.  "I do not doubt that
+the shipment will arrive today" and "... will not arrive today" share every
+word and sit at opposite ends of the scale, and a frozen Qwen3-0.6B pooled at
+the last token of layer 13 separates them nineteen times in twenty.
+
+§3.3's ordinal head loses by *more* at this size, not less: the paired
+bootstrap difference goes from −0.360 [−0.560, −0.147] to −0.489 [−0.606,
+−0.367].  A gap that widens with data is not a capacity shortfall waiting to be
+fed; it is the wrong constraint.  One latent direction with four thresholds is
+not what five levels of epistemic commitment are in this encoder's space, and
+adding examples makes that clearer rather than less so.
+
 
 ** P3 -- calibration proper
 
@@ -1851,7 +1933,8 @@ and nothing here walked it back.
 | P3    | is the head calibrated?                        | accepted -- corrected output inside the calibrated band, control separated   |
 | Score | does a frozen donor support an ordinal scale?  | yes -- 0.867 held-out against a 0.200 chance baseline                       |
 | Score | word order, or word identity?                  | order -- 0.820 where no bag of words can pass 0.600                         |
-| Score | does §3.3's cumulative-link head earn its keep? | no -- it loses to a plain softmax by 0.360 MAE, interval excluding zero     |
+| Score | does §3.3's cumulative-link head earn its keep? | no -- it loses to a plain softmax by 0.360 MAE, and by 0.489 at 3x the data |
+| Score | is the head it ships calibrated?               | yes, once the calibrator is fitted on a split held back from head and test |
 
 The compositional number is the load-bearing one.  =failed to lose= and
 =failed to win= share every content word; a model scoring 0.792 on that subset
@@ -1952,15 +2035,15 @@ commit in the very paragraph warning about it.
   it is most interesting.  More data is the remedy, not a different
   calibrator.
 - *Score is built, its architecture argument did not survive, and the head it
-  ships is not calibrated.*  §2's signature is implemented and the primitive
-  works; §3.3's cumulative-link head is rejected by the rule §3.3 itself set,
-  and the head behind Score is now the plain softmax.  That head's calibration
-  was then pre-registered and measured, and it failed: the out-of-fold
-  temperature points the opposite way from the correction the held-out
-  scenarios need, so P3's recipe does not transfer here.  Two explanations were
-  offered and both refuted, so the disagreement is recorded as unexplained.  A
-  re-test needs three-way scenario splits and more scenarios than this dataset
-  has.
+  ships is calibrated -- on the second attempt.*  §2's signature is implemented
+  and the primitive works: 0.950 held-out, and 0.942 on a subset where no bag
+  of words can pass 0.600.  §3.3's cumulative-link head is rejected by the rule
+  §3.3 itself set, by a margin that widens with data.  Calibration failed on a
+  first pre-registered attempt whose power was afterwards measured at 0.245
+  against a 1.25x error -- a test too weak to have been worth reading either
+  way -- and passed on a re-test with three-way scenario splits whose sizes
+  were chosen from stubs.  Running the old procedure on the new data still
+  fails, so the fix is the split and not the extra examples.
 - *Nothing here says anything about Jev.*  The category is reproducible; the
   artefact is not, and no result above should be read as a comparison.
 
