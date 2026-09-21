@@ -596,11 +596,18 @@
     (if (gethash (plist-get r :text) texts) (setq dups (1+ dups))
       (puthash (plist-get r :text) t texts))
     (puthash (plist-get r :scenario) t scenarios))
-  (nso-t-num "dataset has 240 examples" (length rows) 240 0.5)
-  (nso-t-num "over 16 scenarios" (hash-table-count scenarios) 16 0.5)
+  ;; Counted rather than spelled out.  The set grew from 240 to 540 for the
+  ;; calibration re-test, and a suite that asserts a literal is a suite that
+  ;; has to be edited every time the data is right.
+  (nso-t-num "every scenario contributes fifteen sentences"
+             (/ (float (length rows)) (hash-table-count scenarios)) 15.0 1.0e-9)
+  (nso-t-gt "and there are enough scenarios for a three-way split"
+            (hash-table-count scenarios) 30)
   (nso-t "no duplicate sentences" (= dups 0) (format "%d duplicates" dups))
   (nso-t "levels are exactly balanced"
-         (let ((ok t)) (dotimes (i k) (unless (= (aref counts i) 48) (setq ok nil))) ok)
+         (let ((ok t) (want (/ (length rows) k)))
+           (dotimes (i k) (unless (= (aref counts i) want) (setq ok nil)))
+           ok)
          (format "%s" (append counts nil)))
   (nso-t-num "so the majority baseline is 0.200"
              (/ (float (aref counts 0)) (length rows)) 0.200 1.0e-9)

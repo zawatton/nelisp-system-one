@@ -45,7 +45,33 @@
     (:subj "the bridge" :be "is" :vp "reopen in spring")
     (:subj "the deposit" :be "is" :vp "be refunded in full")
     (:subj "the roof" :be "is" :vp "leak again")
-    (:subj "the results" :be "are" :vp "come back on Monday")))
+    (:subj "the results" :be "are" :vp "come back on Monday")
+    ;; --- added 2026-09-21 for the calibration re-test ----------------------
+    ;; The re-test needs a three-way scenario split -- train, calibrate, test --
+    ;; and the first attempt failed on five held-out scenarios, two of which had
+    ;; to carry the calibrator.  These twenty use the same fifteen templates, so
+    ;; the bag-identical pairing and its bound carry over unchanged; the checks
+    ;; below re-derive both from the emitted file rather than assuming it.
+    (:subj "the invoice" :be "is" :vp "be settled by month end")
+    (:subj "the sensor" :be "is" :vp "trigger during the storm")
+    (:subj "the tenant" :be "is" :vp "renew the lease")
+    (:subj "the crop" :be "is" :vp "survive the frost")
+    (:subj "the ferry" :be "is" :vp "run in this wind")
+    (:subj "the licence" :be "is" :vp "be renewed in time")
+    (:subj "the pipe" :be "is" :vp "freeze overnight")
+    (:subj "the candidate" :be "is" :vp "accept the offer")
+    (:subj "the server" :be "is" :vp "stay up through the night")
+    (:subj "the permit" :be "is" :vp "come through this week")
+    (:subj "the train" :be "is" :vp "reach the junction by noon")
+    (:subj "the battery" :be "is" :vp "last the whole shift")
+    (:subj "the paint" :be "is" :vp "dry before morning")
+    (:subj "the supplier" :be "is" :vp "deliver the parts")
+    (:subj "the appeal" :be "is" :vp "be heard this year")
+    (:subj "the stream" :be "is" :vp "flood the lower field")
+    (:subj "the machine" :be "is" :vp "pass inspection")
+    (:subj "the grant" :be "is" :vp "be approved in full")
+    (:subj "the signal" :be "is" :vp "clear before rush hour")
+    (:subj "the samples" :be "are" :vp "reach the lab intact")))
 
 (defun nso-mk--cap (s)
   (concat (upcase (substring s 0 1)) (substring s 1)))
@@ -240,12 +266,14 @@ best any model whose input is the set of words can do on it."
       (insert ";; Score's task: \"how strongly does this sentence commit to the event\n")
       (insert ";; happening?\", on five ordered levels\n;;\n")
       (insert ";;   0 ruled out  <  1 unlikely  <  2 uncertain  <  3 likely  <  4 certain\n;;\n")
-      (insert ";; Sixteen scenarios, fifteen sentences each, 240 examples, exactly 48 at\n")
+      (insert (format ";; %d scenarios, fifteen sentences each, %d examples, exactly %d at\n"
+                      idx (length rows) (/ (length rows) k)))
       (insert ";; every level and exactly three per level per scenario.  So the\n")
       (insert ";; majority-class baseline is 0.200 with nothing to round, and the best\n")
       (insert ";; constant answer is the middle level at an MAE of 1.200.  Both numbers\n")
       (insert ";; are what the head has to beat to have used the sentence at all.\n;;\n")
-      (insert ";; SPLIT BY :scenario, never by example.  Fifteen sentences share a subject\n")
+      (insert ";; SPLIT BY :scenario, never by example, and for the calibration re-test\n")
+      (insert ";; three ways: train, calibrate, test.  Fifteen sentences share a subject\n")
       (insert ";; and a verb phrase; splitting inside one would put near-duplicates on both\n")
       (insert ";; sides and report memorisation as generalisation.\n;;\n")
       (insert ";; Two difficulties, marked by :hard.\n;;\n")
