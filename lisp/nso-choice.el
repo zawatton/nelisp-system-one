@@ -207,21 +207,47 @@ zero initial rows would make every P gradient zero."
     (dolist (row rows) (aset out i (nso-dot row x)) (setq i (1+ i)))
     out))
 
-(defun nso-choice-lowrank-logits (model s options)
-  "Score OPTIONS after applying shared MODEL projection to state S."
-  (let* ((u (nso-choice-lowrank--project model s))
-         (scale (/ 1.0 (sqrt (float (plist-get model :rank)))))
-         (out (make-vector (length options) 0.0)) (i 0))
-    (dolist (o options)
-      (aset out i (* scale (nso-dot u (nso-choice-lowrank--project model o))))
+(defvar nso-choice-lowrank--option-projection-cache nil
+  "Per-evaluation cache of projected option lists, keyed by `eq'.
+This is dynamically bound by loss and gradient evaluations.  Leaving it nil
+outside those entry points makes standalone logits calls self-contained and
+prevents projections from surviving a mutation of the model's matrix.")
+
+(defun nso-choice-lowrank--project-options (model options)
+  "Project OPTIONS through MODEL, reusing this evaluation's `eq' entry."
+  (if (null nso-choice-lowrank--option-projection-cache)
+      (mapcar (lambda (option) (nso-choice-lowrank--project model option)) options)
+    (or (gethash options nso-choice-lowrank--option-projection-cache)
+        (puthash options
+                 (mapcar (lambda (option)
+                           (nso-choice-lowrank--project model option))
+                         options)
+                 nso-choice-lowrank--option-projection-cache))))
+
+(defun nso-choice-lowrank--logits-from-projections (model u projected-options)
+  "Score PROJECTED-OPTIONS against already projected state U under MODEL."
+  (let* ((scale (/ 1.0 (sqrt (float (plist-get model :rank)))))
+         (out (make-vector (length projected-options) 0.0))
+         (i 0))
+    (dolist (v projected-options)
+      (aset out i (* scale (nso-dot u v)))
       (setq i (1+ i)))
     out))
+
+(defun nso-choice-lowrank-logits (model s options)
+  "Score OPTIONS after applying shared MODEL projection to state S."
+  (nso-choice-lowrank--logits-from-projections
+   model
+   (nso-choice-lowrank--project model s)
+   (nso-choice-lowrank--project-options model options)))
 
 (defun nso-choice-lowrank-probs (model s options)
   (nso-softmax-vec (nso-choice-lowrank-logits model s options)))
 
 (defun nso-choice-lowrank-loss (model examples l2)
-  (let ((sum 0.0) (n (length examples)))
+  (let ((sum 0.0) (n (length examples))
+        (nso-choice-lowrank--option-projection-cache
+         (make-hash-table :test #'eq)))
     (dolist (e examples)
       (let* ((p (nso-choice-lowrank-probs model (plist-get e :state)
                                            (plist-get e :options)))
@@ -238,14 +264,20 @@ For z_i=(Ps).(Po_i)/sqrt(R), d z_i/d P_r is
 ((P o_i)_r s + (P s)_r o_i)/sqrt(R)."
   (let* ((rows (plist-get model :p)) (rank (length rows))
          (dim (length (car rows))) (gp (mapcar (lambda (_) (nso-zeros dim)) rows))
-         (scale (/ 1.0 (sqrt (float rank)))) (n (length examples)))
+         (scale (/ 1.0 (sqrt (float rank)))) (n (length examples))
+         (nso-choice-lowrank--option-projection-cache
+          (make-hash-table :test #'eq)))
     (dolist (e examples)
       (let* ((s (plist-get e :state)) (opts (plist-get e :options))
              (label (plist-get e :label))
              (u (nso-choice-lowrank--project model s))
-             (p (nso-choice-lowrank-probs model s opts)) (i 0))
-        (dolist (o opts)
-          (let* ((v (nso-choice-lowrank--project model o))
+             (vs (nso-choice-lowrank--project-options model opts))
+             (p (nso-softmax-vec
+                 (nso-choice-lowrank--logits-from-projections model u vs)))
+             (i 0))
+        (while opts
+          (let* ((o (car opts))
+                 (v (car vs))
                  (err (* scale (/ (- (aref p i) (if (= i label) 1.0 0.0)) n))))
             (dotimes (r rank)
               (let ((row (nth r gp)))
@@ -253,7 +285,7 @@ For z_i=(Ps).(Po_i)/sqrt(R), d z_i/d P_r is
                   (aset row j (+ (aref row j)
                                  (* err (+ (* (aref v r) (aref s j))
                                            (* (aref u r) (aref o j))))))))))
-          (setq i (1+ i)))))
+          (setq opts (cdr opts) vs (cdr vs) i (1+ i)))))
     (let ((i 0))
       (dolist (row gp)
         (nso-axpy row l2 (nth i rows))

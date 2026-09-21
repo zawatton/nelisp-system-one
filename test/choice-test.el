@@ -23,6 +23,7 @@
 (require 'nso-choice)
 (require 'nso-types)
 (require 'nso-stub)
+(require 'cl-lib)
 (load (expand-file-name "nso-test-helper.el"
                         (file-name-directory (or load-file-name buffer-file-name))))
 
@@ -225,6 +226,34 @@
             (nso-choice-accuracy m-std stdized) 0.95))
 
 ;;; --- shared low-rank projection ------------------------------------------
+
+(let* ((rng (nso-rng 30))
+       (options-a (let (out)
+                    (dotimes (_ 4 (nreverse out))
+                      (push (ct--unit rng ct--dim) out))))
+       ;; Equal contents are deliberately insufficient: only list identity
+       ;; permits reuse, so this second option set must get its own entry.
+       (options-b (copy-sequence options-a))
+       (examples (list (ct--example rng options-a 0 0.5)
+                       (ct--example rng options-a 1 0.5)
+                       (ct--example rng options-b 2 0.5)
+                       (ct--example rng options-a 3 0.5)))
+       (model (nso-choice-lowrank-make ct--dim 3))
+       (original (symbol-function 'nso-choice-lowrank--project)))
+  (dolist (entry `(("low-rank loss projects each distinct option set once"
+                    . ,(lambda () (nso-choice-lowrank-loss model examples 0.02)))
+                   ("low-rank gradient projects each distinct option set once"
+                    . ,(lambda () (nso-choice-lowrank-grad model examples 0.02)))))
+    (let ((calls 0))
+      (cl-letf (((symbol-function 'nso-choice-lowrank--project)
+                 (lambda (m x)
+                   (setq calls (1+ calls))
+                   (funcall original m x))))
+        (funcall (cdr entry)))
+      ;; Four state projections plus four projections for each of the two
+      ;; distinct option-list identities.  Re-projecting per example is 20;
+      ;; keying by contents rather than identity is 8.
+      (nso-t (car entry) (= calls 12)))))
 
 (let* ((rng (nso-rng 31))
        (options (let (o) (dotimes (_ 4 (nreverse o)) (push (ct--unit rng ct--dim) o))))

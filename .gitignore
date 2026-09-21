@@ -6,3 +6,7 @@
 # Donor-derived fixtures: regenerate from the sibling nelisp-llm.
 /test/fixtures/*.eld
 __pycache__/
+
+# Serena (an agent tool) drops this beside whatever directory it is run in.
+# It was swept into 7158847 by a git add -A of my own, in a public repo.
+.serena/
