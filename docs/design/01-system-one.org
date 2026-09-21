@@ -1341,6 +1341,125 @@ pre-registration becomes decoration.  A re-test is a new pre-registration with
 more scenarios, and it is named here as the follow-up rather than performed as
 a correction.
 
+**** Calibration re-test -- pre-registered 2026-09-21
+
+The follow-up named above, written before the twenty new scenarios were
+encoded.  It replaces nothing: the first attempt's FAIL stands on its own
+terms, and this is a differently-built test of the same question.
+
+***** Why a re-test at all, stated harder than last time
+
+The first attempt's real defect was not its threshold.  Measured afterwards on
+stubs, at its split sizes of 30 fit / 45 eval:
+
+| calibrate/test | band [5%, 95%]     | p95 CI width | power 1.25x | power 1.5x |
+|----------------+--------------------+--------------+-------------+------------|
+| 30/45          | [−0.1059, +0.0206] |       0.0049 |       0.245 |      0.597 |
+| 120/120        | [−0.0259, +0.0064] |       0.0019 |       0.603 |      0.932 |
+| 180/180        | [−0.0162, +0.0047] |       0.0010 |       0.694 |      0.958 |
+
+*At 30/45 a model 1.25x overconfident was caught one time in four.*  That test
+was not one whose band was too narrow; it was one too weak to have been worth
+reading in either direction, which is harder to notice than a wrong threshold
+because nothing about it looks broken.  A FAIL from it and a PASS from it would
+have carried about the same information.
+
+***** The split, fixed now
+
+Thirty-six scenarios, fifteen sentences each.  Three ways, disjoint by
+scenario, defined so the assignment is computable rather than listed:
+
+- *test* -- scenario id divisible by three.  Twelve scenarios, 180 examples.
+- *calibrate* -- of the remaining twenty-four in id order, every third.  Eight
+  scenarios, 120 examples: ids 4, 8, 13, 17, 22, 26, 31, 35.
+- *train* -- the other sixteen, 240 examples.
+
+The head fits on train alone.  The temperature fits on *calibrate*, which the
+head never trained on and the test never sees.  That is the one structural
+change from the first attempt, where the calibrator was fitted out of fold on
+the training split and turned out to point the opposite way from what the
+held-out scenarios needed.
+
+The test set contains the whole of the first attempt's held-out set, so the
+accuracy figures remain comparable; no test scenario has ever been in any
+training split.
+
+***** Why these sizes
+
+Measured on stubs at 2500 draws, over the four three-way splits of thirty-six
+scenarios that were actually available:
+
+| train/cal/test | calibrate/test |    p95 CI | power 1.25x | power 1.5x |
+|----------------+----------------+-----------+-------------+------------|
+| 18/6/12        | 90/180         |    0.0014 |       0.648 |      0.942 |
+| 20/6/10        | 90/150         |    0.0013 |       0.578 |      0.931 |
+| *16/8/12*      | *120/180*      |  *0.0010* |     *0.693* |    *0.948* |
+| 16/10/10       | 150/150        |    0.0015 |       0.679 |      0.936 |
+
+16/8/12 is better than 16/10/10 on every column at the same training size, so
+it is not a trade.  Tilting toward the test half beats tilting toward the
+calibrate half throughout -- 180/60 falls to 0.455 where 60/180 holds 0.555 --
+which is what a calibrator fitting one scalar against an evaluator estimating
+a mean should do.
+
+***** Declared power, before the result exists
+
+*Power against the effect actually suspected is mediocre and no allocation
+fixes it.*  The temperature fitted directly on the first attempt's held-out
+logits was 1.313, which falls between the two sweep points: power is 0.693 at
+1.25x and 0.948 at 1.5x, so somewhere near 0.8 at the size in question.  Power
+against 1.25x never passes 0.694 at any size this dataset can reach, because
+that is a property of an NLL gain with a one-parameter recalibrator and not of
+the split.
+
+Therefore *INDETERMINATE is a foreseen outcome of this test, not a failure of
+it*, and saying so afterwards would be an excuse rather than a finding.
+
+***** The verdict is three-valued
+
+The first attempt read a FAIL off a threshold whose own uncertainty straddled
+the observed value.  So:
+
+- *PASS* -- the gain lies inside the band, and outside the bootstrap interval
+  of the nearer percentile.
+- *FAIL* -- the gain lies outside the band, and outside that interval.
+- *INDETERMINATE* -- the gain lies inside the bootstrap interval of the
+  percentile deciding it.  The call would then belong to the simulation rather
+  than to the head, and neither word is said.
+
+The band is estimated from at least 12000 draws with a bootstrap interval on
+the percentile itself, and both are printed.  A verdict reported without the
+threshold's error bar is not reportable.
+
+***** The gates
+
+- *Gate 0, convergence.*  The head finishes below a gradient norm of 0.05.
+- *Gate 1, the instrument can see.*  The 4x-overconfident control clears the
+  calibrated band, at the actual split sizes.
+- *Gate 2, acceptance.*  The gain on *test*, after the temperature fitted on
+  *calibrate*, is PASS by the three-valued rule above.
+
+***** Reported, not gated
+
+- The temperature fitted on calibrate, beside the one fitted out of fold on
+  train and the one fitted directly on test.  The first attempt's finding was
+  that the second points the wrong way; whether the first agrees with the third
+  is the diagnostic that says whether the structural change worked.
+- Accuracy and MAE across the temperature.  They must be *equal*; the argmax
+  cannot move under a positive scalar divide.
+- ECE with its bin count and n, not as a gate.
+- Held-out accuracy and the hard-subset figures on the enlarged test set, so
+  the Score result itself is re-measured at n=180 rather than n=75.
+
+***** What would make this fail
+
+A temperature on calibrate far from 1, a gain on test above the band's upper
+percentile and clear of that percentile's interval.  That would mean the
+correction still does not land even when the calibrator is fitted on scenarios
+of the right kind, and the conclusion would be that this head cannot be
+calibrated by a single temperature -- which is a real finding and a different
+one from "the procedure was pointed at the wrong data".
+
 
 ** P3 -- calibration proper
 

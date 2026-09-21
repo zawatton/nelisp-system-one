@@ -14,7 +14,7 @@ LOAD = -L lisp -L $(PHOTON) -L $(LLM)
 # sources, so a cache nothing rebuilt is a cache that silently wins.
 FAST = -L $(ELC) $(LOAD)
 
-.PHONY: test compile deps clean p1 score
+.PHONY: test compile deps clean p1 score retest
 
 # Everything runs byte-compiled, and that is a performance decision rather
 # than a tidiness one.  The numeric loops in lisp/ are interpreted when Emacs
@@ -67,6 +67,11 @@ p1: compile deps
 # signal and the noise mode, which is what says it can report a failure.
 score: compile deps
 	$(EMACS) -Q --batch $(FAST) -l tools/score-encode-probe.el
+
+# The calibration re-test, on states the score target has already written.
+# No GPU: it reads build/score-states.eld and needs all 36 scenarios in it.
+retest: compile deps
+	$(EMACS) -Q --batch $(FAST) -l tools/score-retest.el
 
 clean:
 	rm -f lisp/*.elc test/*.elc
