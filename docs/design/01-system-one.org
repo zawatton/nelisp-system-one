@@ -1005,6 +1005,12 @@ far above the diagonal arms, and on the diagonal head whitening made the
 training fit worse (0.260 against 0.344) rather than better.  §10.4 blamed a
 cone; opening the cone is not what helped.
 
+The fitting rows' mean pairwise cosine was 0.782 raw, -0.006 after
+standardisation, and -0.009 after whitening
+(=build/p2-remedy-progress.log=).  These are the remedy run's fitting rows,
+not the earlier sample behind §10.4's 0.923.  Standardisation already removed
+the positive mean cosine; whitening changed this statistic only slightly.
+
 *This is not the phase's verdict and must not be quoted as one.*  The
 pre-registration made gate 1 a prerequisite and gate 1 admitted nothing.
 Re-judging with the prerequisite removed, after seeing which way the numbers
@@ -2153,8 +2159,10 @@ work":
   diagonal map has little room to separate topics it never saw.
 - Replacing bare topic names with descriptions in the request register helped,
   which says part of the gap is register mismatch rather than capacity.
-- Two remedies were identified and not run: more than diagonal capacity, and
-  whitening rather than per-axis standardisation.
+- Two remedies were identified at the original diagnosis: more than diagonal
+  capacity, and whitening rather than per-axis standardisation.  Both were
+  subsequently run on 2026-09-21; see §6's "P2 remedies -- result".  Neither
+  was accepted under the pre-registered rule, because gate 1 admitted no arm.
 
 So the honest statement is that *this* encoder with *this* head does not
 support Choice on unseen topics -- not that option scoring is the wrong
