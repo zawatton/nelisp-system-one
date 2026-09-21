@@ -139,6 +139,115 @@ near -1e6, so every exponent in this file is clamped rather than trusted.")
       (aset out i (* (- (aref x i) (aref mu i)) (aref iv i))))
     out))
 
+;;; Covariance whitening
+;;
+;; The fitting set is small while the embedding dimension is 1024.  Rather
+;; than form or diagonalise a 1024x1024 matrix, this stores the centred fitting
+;; vectors and diagonalises their n-by-n Gram matrix.  If q is a Gram
+;; eigenvector with eigenvalue lambda, Xq/sqrt((n-1)lambda) is the matching
+;; covariance eigenvector.  The remaining dimensions all have the shrunk
+;; diagonal eigenvalue, so they need only one scalar multiplier.
+
+(defun nso-whitener (xs &optional shrink)
+  "Fit a shrinkage covariance whitener from fitting vectors XS.
+
+SHRINK defaults to 0.1: it leaves most of the measured covariance intact but
+keeps the many unobserved directions well-conditioned.  Only XS contributes
+statistics; callers must fit it on training vectors and apply it separately.
+The result is a plist consumed by `nso-whiten'."
+  (let* ((n (length xs))
+         (d (length (car xs)))
+         (a (or shrink 0.1))
+         (beta (- 1.0 a))
+         (mu (nso-zeros d))
+         (centered nil)
+         (denom (float (max 1 (1- n))))
+         (tau 0.0))
+    (unless (and (>= a 0.0) (<= a 1.0))
+      (error "SHRINK must be between zero and one"))
+    (dolist (x xs) (nso-axpy mu (/ 1.0 n) x))
+    (dolist (x xs)
+      (let ((z (nso-zeros d)))
+        (nso-axpy z 1.0 x)
+        (nso-axpy z -1.0 mu)
+        (push z centered)))
+    (setq centered (nreverse centered))
+    (dolist (z centered)
+      (setq tau (+ tau (/ (nso-dot z z) (* denom d)))))
+    ;; The sum above already averages over the n-1 covariance denominator;
+    ;; dividing by n again would make the shrinkage target n times too small.
+    (let* ((gram (make-vector n nil))
+           (q (make-vector n nil))
+           (vals (nso-zeros n))
+           (floor (max 1.0e-12 (* 1.0e-12 (max 1.0 tau))))
+           (base (+ (* a tau) floor))
+           (basis nil) (factors nil))
+      ;; Gram = X'X/(n-1).  Jacobi rotations are adequate for n < 100 and
+      ;; avoid allocating a dense matrix in the embedding dimension.
+      (dotimes (i n)
+        (aset gram i (nso-zeros n))
+        (aset q i (nso-zeros n))
+        (aset (aref q i) i 1.0)
+        (dotimes (j n)
+          (aset (aref gram i) j (/ (nso-dot (nth i centered) (nth j centered)) denom))))
+      ;; A sweep is not enough for a highly correlated Gram matrix; allow
+      ;; several Jacobi sweeps while still keeping the work in the fitting-set
+      ;; dimension rather than the 1024-wide embedding dimension.
+      (dotimes (iteration (* 100 (max 1 n)))
+        (let ((p 0) (r 1) (mx 0.0))
+          (ignore iteration)
+          (dotimes (i n)
+            (dotimes (j i)
+              (when (> (abs (aref (aref gram i) j)) mx)
+                (setq mx (abs (aref (aref gram i) j)) p j r i))))
+          (when (> mx 1.0e-10)
+            (let* ((gpp (aref (aref gram p) p))
+                   (grr (aref (aref gram r) r))
+                   (gpr (aref (aref gram r) p))
+                   (theta (* 0.5 (atan (/ (* 2.0 gpr) (- grr gpp)))))
+                   (co (cos theta)) (si (sin theta)))
+              (dotimes (k n)
+                (unless (or (= k p) (= k r))
+                  (let ((x (aref (aref gram k) p)) (y (aref (aref gram k) r)))
+                    (aset (aref gram k) p (- (* co x) (* si y)))
+                    (aset (aref gram p) k (aref (aref gram k) p))
+                    (aset (aref gram k) r (+ (* si x) (* co y)))
+                    (aset (aref gram r) k (aref (aref gram k) r)))))
+              (aset (aref gram p) p (+ (* co co gpp) (* -2.0 co si gpr) (* si si grr)))
+              (aset (aref gram r) r (+ (* si si gpp) (* 2.0 co si gpr) (* co co grr)))
+              (aset (aref gram p) r 0.0)
+              (aset (aref gram r) p 0.0)
+              (dotimes (k n)
+                (let ((x (aref (aref q k) p)) (y (aref (aref q k) r)))
+                  (aset (aref q k) p (- (* co x) (* si y)))
+                  (aset (aref q k) r (+ (* si x) (* co y)))))))))
+      (dotimes (k n)
+        (let ((lambda (max 0.0 (aref (aref gram k) k))))
+          (aset vals k lambda)
+          ;; Eigenvalues below this relative floor are numerical remnants of
+          ;; the singular sample covariance, not observed directions.
+          (when (> lambda (* 1.0e-8 (max 1.0 tau)))
+            (let ((u (nso-zeros d)))
+              (dotimes (i n) (nso-axpy u (aref (aref q i) k) (nth i centered)))
+              (let ((scale (/ 1.0 (sqrt (* denom lambda)))))
+                (dotimes (i d) (aset u i (* scale (aref u i)))))
+              (push u basis)
+              (push (cons u (/ 1.0 (sqrt (+ (* beta lambda) (* a tau) floor)))) factors)))))
+      (list :mu mu :basis basis :factors factors :outside (/ 1.0 (sqrt base))))))
+
+(defun nso-whiten (w x)
+  "Apply whitener W to one vector X, returning a fresh vector."
+  (let* ((mu (plist-get w :mu))
+         (out (nso-zeros (length x)))
+         (z (nso-zeros (length x)))
+         (outside (plist-get w :outside)))
+    (dotimes (i (length x)) (aset z i (- (aref x i) (aref mu i))))
+    (nso-axpy out outside z)
+    (dolist (pair (plist-get w :factors))
+      (let ((u (car pair)) (delta (- (cdr pair) outside)))
+        (nso-axpy out (* delta (nso-dot u z)) u)))
+    out))
+
 ;;; The Noul head
 
 (defun nso-head-make (dim)

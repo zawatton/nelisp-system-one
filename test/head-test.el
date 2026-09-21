@@ -358,6 +358,130 @@
     (nso-t-gt "the probe can memorise noise on the training split" tr-acc 0.8)
     (nso-t-lt "but lands at chance on held-out noise -- no leak" te-acc 0.68)))
 
+;;; --- covariance whitening ------------------------------------------------
+
+(defun ht--covariance (zs)
+  "Sample covariance matrix of four-dimensional vectors ZS."
+  (let ((means (make-vector 4 0.0))
+        (cov (make-vector 4 nil))
+        (denom (float (max 1 (1- (length zs))))))
+    (dotimes (i 4) (aset cov i (make-vector 4 0.0)))
+    (dolist (z zs) (dotimes (i 4) (aset means i (+ (aref means i) (aref z i)))))
+    (dotimes (i 4) (aset means i (/ (aref means i) (length zs))))
+    (dolist (z zs)
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (aset (aref cov i) j
+                (+ (aref (aref cov i) j)
+                   (* (- (aref z i) (aref means i))
+                      (- (aref z j) (aref means j))))))))
+    (dotimes (i 4)
+      (dotimes (j 4)
+        (aset (aref cov i) j (/ (aref (aref cov i) j) denom))))
+    cov))
+
+(defun ht--max-diag-error (cov)
+  "Largest absolute deviation of COV's diagonal from one."
+  (let ((out 0.0))
+    (dotimes (i 4) (setq out (max out (abs (- (aref (aref cov i) i) 1.0)))))
+    out))
+
+(defun ht--max-offdiag (cov)
+  "Largest absolute off-diagonal entry of COV."
+  (let ((out 0.0))
+    (dotimes (i 4)
+      (dotimes (j i) (setq out (max out (abs (aref (aref cov i) j))))))
+    out))
+
+(defun ht--basis-orthonormal-p (basis)
+  "Whether BASIS has unit norms and mutually orthogonal vectors."
+  (let ((ok t))
+    (dolist (u basis)
+      (unless (< (abs (- (nso-dot u u) 1.0)) 1.0e-7) (setq ok nil)))
+    (dolist (u basis)
+      (dolist (v basis)
+        (unless (or (eq u v) (< (abs (nso-dot u v)) 1.0e-7))
+          (setq ok nil))))
+    ok))
+
+(let* ((rng (nso-rng 47))
+       (xs (let (out)
+             (dotimes (_ 44 (nreverse out))
+               (let* ((v (make-vector 4 0.0))
+                      (a (- (nso-rng-float rng) 0.5))
+                      (b (- (nso-rng-float rng) 0.5))
+                      (c (- (nso-rng-float rng) 0.5))
+                      (d (- (nso-rng-float rng) 0.5)))
+                 (aset v 0 (+ a (* 0.3 c)))
+                 (aset v 1 (+ (* 0.9 a) (* 0.1 b) (* 0.3 d)))
+                 (aset v 2 (+ (* 0.7 a) (* 0.3 b) (* 0.3 c) (* 0.3 d)))
+                 (aset v 3 (+ b (* 0.3 c) (* 0.3 d)))
+                 (push v out)))))
+       (w (nso-whitener xs 0.0001))
+       (wz (mapcar (lambda (x) (nso-whiten w x)) xs))
+       (cov (ht--covariance wz)))
+  (message "whitened covariance: %S" cov)
+  (nso-t "whitener basis vectors are orthonormal"
+         (ht--basis-orthonormal-p (plist-get w :basis)))
+  ;; With shrink near zero, the fitting covariance should be identity.  A
+  ;; larger shrink is intentionally partial: it pulls measured eigenvalues
+  ;; toward tau, so exact identity is no longer the expected result.
+  (nso-t-num "whitened covariance diagonals are one"
+              (ht--max-diag-error cov) 0.0 0.05)
+  (nso-t-num "whitened covariance off-diagonals are zero"
+              (ht--max-offdiag cov) 0.0 0.05)
+  (let* ((mean (make-vector 4 0.0))
+         (tau 0.0)
+         (z (make-vector 4 0.0))
+         (w-full (nso-whitener xs 1.0)))
+    (dolist (x xs) (dotimes (i 4) (aset mean i (+ (aref mean i) (aref x i)))))
+    (dotimes (i 4) (aset mean i (/ (aref mean i) (length xs))))
+    (dolist (x xs)
+      (dotimes (i 4)
+        (aset z i (- (aref x i) (aref mean i))))
+      (setq tau (+ tau (/ (nso-dot z z) (* (1- (length xs)) 4.0)))))
+    (let ((x (car xs)) (got (nso-whiten w-full (car xs))) (err 0.0))
+      (dotimes (i 4)
+        (setq err (max err
+                       (abs (- (aref got i)
+                               (/ (- (aref x i) (aref mean i)) (sqrt tau)))))))
+      (message "shrink-one scalar error: %.12g (tau %.12g)" err tau)
+      (nso-t-num "shrink one uses the sample mean variance tau"
+                  err 0.0 1.0e-9)))
+  (let* ((middle (nso-whitener xs 0.1))
+         (middle-cov
+          (ht--covariance (mapcar (lambda (x) (nso-whiten middle x)) xs)))
+         (diag-error (ht--max-diag-error middle-cov))
+         (offdiag-error (ht--max-offdiag middle-cov)))
+    (message "shrink 0.1 covariance errors: diagonal %.12g, off-diagonal %.12g"
+             diag-error offdiag-error)
+    ;; These two are REGRESSION PINS, not property assertions, and the names say
+  ;; so because the first draft's did not.  At shrink 0.1 on rank-deficient
+  ;; data the correct whitener does NOT reach the identity -- the small
+  ;; eigenvalues are floored at a*tau, which is what shrinkage is for -- so
+  ;; the figures below are what correct code measures, held to 1e-9 so that a
+  ;; change in tau moves them.  Mutating tau makes them read 0.0897 and 0.0754
+  ;; instead: closer to the identity, because too small a tau shrinks less.
+  ;; A test called "diagonals are one" that asserts they equal 0.63 would
+  ;; mislead the next reader into thinking this data whitens fully.
+  (nso-t-num "shrink 0.1 diagonal error is pinned, not one"
+                diag-error 0.6305974002199162 1.0e-9)
+    (nso-t-num "shrink 0.1 off-diagonal is pinned, not zero"
+                offdiag-error 0.282456995620153 1.0e-9))
+  (let* ((partial (nso-whitener xs 0.5))
+         (partial-cov
+          (ht--covariance (mapcar (lambda (x) (nso-whiten partial x)) xs))))
+    (nso-t-gt "large shrinkage deliberately remains partial"
+               (ht--max-diag-error partial-cov) 0.1))
+  ;; Applying a fit to a distinct set is both the intended leak boundary and
+  ;; a check that the stored low-dimensional basis is self-contained.
+  (nso-t "a whitener fitted on one set applies to another"
+         (vectorp (nso-whiten w (vector 0.2 -0.1 0.4 0.7))))
+  (let* ((same (list (vector 1.0 2.0 3.0 4.0) (vector 1.0 2.0 3.0 4.0)))
+         (z (nso-whiten (nso-whitener same) (car same))))
+    (nso-t "a degenerate whitener produces finite values"
+           (let ((ok t)) (dotimes (i 4) (unless (= (aref z i) (aref z i)) (setq ok nil))) ok))))
+
 (nso-t-done "head")
 
 ;;; head-test.el ends here

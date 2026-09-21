@@ -224,6 +224,55 @@
   (nso-t-gt "standardised, the head fits this geometry completely"
             (nso-choice-accuracy m-std stdized) 0.95))
 
-(nso-t-done "choice")
+;;; --- shared low-rank projection ------------------------------------------
 
+(let* ((rng (nso-rng 31))
+       (options (let (o) (dotimes (_ 4 (nreverse o)) (push (ct--unit rng ct--dim) o))))
+       (examples (ct--set rng options 12 0.5))
+       (model (nso-choice-lowrank-make ct--dim 3))
+       (l2 0.02) (g (nso-choice-lowrank-grad model examples l2))
+       (eps 1.0e-5) (worst 0.0))
+  ;; Probe every entry in every row: a missing transpose in the shared map
+  ;; otherwise still produces a plausible-looking training curve.
+  (let ((rows (plist-get model :p)) (grads (plist-get g :dp)) (r 0))
+    (dolist (row rows)
+      (let ((j 0))
+        (dotimes (_ (length row))
+          (let ((orig (aref row j)))
+            (aset row j (+ orig eps))
+            (let ((lp (nso-choice-lowrank-loss model examples l2)))
+              (aset row j (- orig eps))
+              (let ((lm (nso-choice-lowrank-loss model examples l2)))
+                (aset row j orig)
+                (setq worst (max worst (/ (abs (- (aref (nth r grads) j)
+                                                   (/ (- lp lm) (* 2 eps))))
+                                          (max 1.0e-8 (abs (aref (nth r grads) j))))))))
+          (setq j (1+ j))))
+      (setq r (1+ r))))
+  (nso-t-lt "low-rank dL/dP matches finite differences" worst 1.0e-5)))
+
+(let* ((rng (nso-rng 37))
+       (opts (let (o) (dotimes (_ 5 (nreverse o)) (push (ct--unit rng ct--dim) o))))
+       (train (ct--set rng opts 80 0.8))
+       (model (nso-choice-lowrank-train train 4 300 0.5 0.02)))
+  (nso-t-gt "low-rank trainer learns the synthetic task"
+            (nso-choice-lowrank-accuracy model train) 0.7)
+  (nso-t-lt "low-rank trainer reports convergence"
+             (plist-get model :final-gnorm) nso-choice-gtol))
+
+(let* ((rng (nso-rng 41)) (dim 1024)
+       (opts (let (o) (dotimes (_ 4 (nreverse o)) (push (ct--unit rng dim) o))))
+       (examples (let (out)
+                   (dotimes (i 24 (nreverse out))
+                     (let* ((o (nth (mod i 4) opts)) (s (make-vector dim 0.0)))
+                       (dotimes (j dim)
+                         (aset s j (* 4.0 (+ (aref o j)
+                                             (* 0.1 (- (nso-rng-float rng) 0.5))))))
+                       (push (list :state s :options opts :label (mod i 4)) out)))))
+       (model (nso-choice-lowrank-train examples 4 250 0.5 0.02)))
+  (nso-t-lt "low-rank trainer converges at dimension 1024"
+             (plist-get model :final-gnorm) nso-choice-gtol))
+
+;;; choice-test.el ends here
+(nso-t-done "choice")
 ;;; choice-test.el ends here
