@@ -1,6 +1,6 @@
 #+TITLE: System One models -- typed, calibrated, single-pass decisions
 #+OPTIONS: toc:2 num:t
-#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Score's retained head CALIBRATED on a re-test with three-way scenario splits, after a first attempt that was underpowered (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
+#+STATUS: scope (A) spike (settled 2026-09-19).  P0, P1 SHIPPED; P2 Choice NOT ACCEPTED; P3 ACCEPTED by a binning-free rule after its ECE gate proved unmeasurable at this n (2026-09-20).  Score ACCEPTED as a primitive with §3.3's ordinal head REJECTED by its own rule (2026-09-21).  Score's retained head CALIBRATED on a re-test with three-way scenario splits, after a first attempt that was underpowered (2026-09-21).  P2 remedies NOT ACCEPTED -- their training screen proved structurally unable to admit anything (2026-09-21).  Spike CLOSED 2026-09-20, reopened for Score and re-closed 2026-09-21 -- see §10.
 
 * Status
 
@@ -947,6 +947,95 @@ Saying this afterwards would be an excuse.  It is said here.
   is a fact about the transform that is worth having whatever the accuracy does.
 - Parameter counts, and the leave-one-topic-out curve over r, so a reader can
   see whether the selection was near a plateau or on a slope.
+
+*** P2 remedies -- result: NOT ACCEPTED, by a gate that cannot see (2026-09-21)
+
+**** The gates, in the order the rule reads them
+
+| gate | what it asks             | verdict | figure                                     |
+|------+--------------------------+---------+--------------------------------------------|
+|    3 | does it score unlabelled?| PASS    | shuffled: 0.229-0.312 against chance 0.250 |
+|    0 | did every arm converge?  | PASS    | \vert g \vert between 2.4e-03 and 5.0e-03            |
+|    1 | does a remedy beat A on the training screen? | *NONE DO* | every difference −0.031 [−0.073, +0.000] |
+|    2 | P2's own held-out criterion | -- | not admissible: gate 1 admitted nothing |
+
+*By the rule as committed, no remedy is accepted.*  Gate 1 is a prerequisite --
+"a remedy is carried to held-out evaluation only if..." -- and it carried none.
+
+**** Gate 1 is a broken instrument, and the run proves it
+
+Every arm but A scored *exactly zero* on leave-one-topic-out.  The reason was
+predicted before the run and is structural: LOO fits on seven topics and scores
+the eighth, but the option set is all eight, so the correct answer is always
+the option the head never trained on.  =nso-choice-train='s own docstring says
+what happens then -- the learned option-only direction pushes toward the
+options it saw, so it *systematically avoids the right one* and lands below
+chance rather than at it.
+
+What makes this a proof rather than a suspicion is the company the zeros keep:
+
+| arm                     | train | LOO   | held-out topics | all twelve |
+|-------------------------+-------+-------+-----------------+------------|
+| A diagonal/standardise  | 0.344 | 0.031 | 0.229           |      0.181 |
+| B diagonal/whiten       | 0.260 | 0.000 | 0.292           |      0.194 |
+| C low rank 4/standardise| *1.000* | 0.000 | *0.438*       |    *0.667* |
+| D low rank 4/whiten     | *1.000* | 0.000 | 0.417           |    *0.667* |
+
+Chance is 0.250 on four held-out topics and 0.083 on twelve.
+
+*Gate 1 rejected an arm that fits its training topics perfectly and scores
+0.667 where chance is 0.083.*  A screen justified as catching heads that
+"cannot fit topics they have seen" rejected the two heads that fit them
+completely, and passed nothing.  It is not measuring what its rationale claims.
+
+A second casualty: because every rank scored 0.000, *r was selected by
+tie-break rather than by evidence*.  The run reports rank 4 for both C and D
+because 4 comes first, not because it won.
+
+**** What the numbers say if one reads past the rule -- and why that is not a verdict
+
+Held-out-topic accuracy for C is 0.438 with a Wilson interval of [0.307,
+0.577], whose lower end clears the 0.25 chance line; D is 0.417 [0.288,
+0.557].  Both would pass gate 2 on their own.  On all twelve options they reach
+0.667 against A's 0.181.
+
+Read plainly, that says *the capacity remedy works and the whitening one does
+not*: C and D are within noise of each other on every measure, while both are
+far above the diagonal arms, and on the diagonal head whitening made the
+training fit worse (0.260 against 0.344) rather than better.  §10.4 blamed a
+cone; opening the cone is not what helped.
+
+*This is not the phase's verdict and must not be quoted as one.*  The
+pre-registration made gate 1 a prerequisite and gate 1 admitted nothing.
+Re-judging with the prerequisite removed, after seeing which way the numbers
+fell, is exactly what a pre-registration exists to prevent -- and this
+repository has already recorded the same temptation once, in P3, where the ECE
+gate proved unmeasurable and the phase was accepted on a *separately
+pre-registered* statistic rather than on a relaxed version of the broken one.
+
+So: the remedies are *unjudged*, the evidence that capacity is the answer is
+strong enough to be worth a fresh pre-registration, and the honest state of §6
+is that P2's remedies were tested by an instrument that could not see them.
+
+**** What a re-test needs
+
+A training screen that measures what its rationale claims.  Leave-one-topic-out
+over a Choice head is not it, for a reason that is a property of the head and
+not of the data: the held-out option is unseen by construction.  Candidates,
+none of them run here:
+
+- Screen on *training* accuracy over the seen topics, which is the number the
+  rationale actually described.  A already supplies it: 0.344 against C and D's
+  1.000.  It would have admitted both.
+- Leave-one-topic-out with the held-out topic's option *removed* from the set,
+  so the answer is always an option the head has seen.  That measures transfer
+  of the state representation without the unseen-option artefact.
+- Freeze the option-only direction (=freeze-c=, already in =nso-choice-train=
+  for this reason) during the screen, which removes the mechanism that pushes
+  away from unseen options.
+
+Whichever is chosen, it is a new pre-registration, written before the numbers
+above are looked at again.
 
 *** The second time a synthetic suite hid a real-scale failure
 
