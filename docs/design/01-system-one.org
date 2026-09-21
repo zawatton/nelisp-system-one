@@ -861,6 +861,93 @@ capacity, which needs more than 144 examples to fit; whitening rather than
 per-dimension standardisation, since the cone is a covariance structure and
 not a per-axis one.  Each is a phase of its own.
 
+*** P2 remedies -- pre-registered 2026-09-21
+
+The first of those three was done and reported above.  The other two are taken
+together here, because they address the same diagnosis from opposite sides --
+one gives the map more capacity, the other changes the space it maps -- and
+running them separately would need two encodes of nothing.
+
+**** The failure is not the optimiser, and that was checked
+
+Before designing anything, the obvious confound was measured.  `nso-choice-train`
+still used a fixed step of 0.5 for 600 iterations on standardised dim-1024
+features, which is exactly the configuration that left the ordinal head at a
+gradient norm of 4.79 and voided two Score probes.  On the real P2 features:
+
+: train 96 examples, 8 options, dim 1024
+: steps 600   |g| 9.71e-05   loss 1.930   train accuracy 0.344
+
+*It converges.*  The verdict is not an optimiser artefact, and the remedies
+answer the right question.
+
+What the same measurement shows instead is sharper than the held-out number
+this phase was reported on: chance is 0.125 and `ln 8` is 2.079, so the
+diagonal head *cannot fit its own training topics*.  Not "generalises poorly"
+-- cannot fit.  That is a capacity or a geometry failure with the gradient
+already at zero, which is precisely what the two remedies are for, and it gives
+this pre-registration a screen that costs no held-out information at all.
+
+**** What is compared
+
+Cached states (=build/p2-states.eld=), mid layer 13, last-token pooling, option
+embeddings pooled from the topic =:description=.  Four heads, on identical
+features, with the same line search, the same convergence criterion, the same
+L2 and the same iteration cap:
+
+| head | map                        | feature transform    | parameters |
+|------+----------------------------+----------------------+------------|
+| A    | diagonal (shipped)         | per-axis standardise |       2048 |
+| B    | diagonal                   | whitening            |       2048 |
+| C    | low rank r                 | per-axis standardise |   r * 1024 |
+| D    | low rank r                 | whitening            |   r * 1024 |
+
+A is the baseline that scored 0.344 on train and 0.375 on held-out topics.
+Whitening adds no fitted parameters -- it is estimated from the fitting rows'
+covariance, with shrinkage, because 1024 dimensions on fewer than a hundred
+vectors is singular.
+
+*r is chosen before any held-out topic is touched*, by leave-one-topic-out
+accuracy over the eight seen topics, swept over r in {4, 8, 16}.  Train
+accuracy alone would not do: it rises with capacity by construction and would
+select 16 every time.
+
+**** The gates
+
+- *Gate 0, convergence.*  Every head finishes below a gradient norm of 0.05.
+  Void otherwise, on the terms that voided two Score probes.
+- *Gate 1, the training screen.*  A remedy is carried to held-out evaluation
+  only if its leave-one-topic-out accuracy over the eight seen topics beats A's
+  by a paired bootstrap interval excluding zero.  A head that cannot fit topics
+  it has seen cannot be expected to score on topics it has not, and this
+  screens for that without spending the held-out set.
+- *Gate 2, P2's own acceptance criterion.*  Accuracy on the four entirely
+  held-out topics, four options, with a Wilson lower bound above the 0.25
+  chance line.
+- *Gate 3, negative control (§4.4).*  Shuffled labels reach chance for every
+  head.  Read first; nothing else is read if it fails.
+
+**** Declared limits, before the result exists
+
+The held-out set is four topics of twelve requests: *48 examples*.  A Wilson
+lower bound clears 0.25 at about 0.40 accuracy there, so anything between
+chance and roughly 0.40 is an outcome this test cannot call, and that is a
+property of the dataset rather than of the remedies.  P2's first run scored
+0.375, which is inside exactly that band -- so a repeat of 0.375 would be
+reported as uninformative rather than as a confirmation.
+
+Saying this afterwards would be an excuse.  It is said here.
+
+**** Reported, not gated
+
+- Twelve-way accuracy, which is a different and easier question than the
+  held-out-topic one.
+- The geometry: mean pairwise cosine of the pooled states before and after
+  whitening.  §10.4 blames a cone at 0.923; whether whitening actually opens it
+  is a fact about the transform that is worth having whatever the accuracy does.
+- Parameter counts, and the leave-one-topic-out curve over r, so a reader can
+  see whether the selection was near a plateau or on a slope.
+
 *** The second time a synthetic suite hid a real-scale failure
 
 =test/choice-test.el= passed 9 of 9 -- including unseen options at 1.000 --
