@@ -31,10 +31,9 @@
                     (or (getenv "NSO_LLM_ROOT")
                         (expand-file-name "../../nelisp-llm" nso-cd--here))))
 
-(dolist (d '("nelisp-photon/lisp" "nelisp-gpu/lisp"))
-  (add-to-list 'load-path (expand-file-name (concat "../../" d) nso-cd--here)))
-(add-to-list 'load-path nso-cd--llm-lisp)
-(add-to-list 'load-path (expand-file-name "../lisp" nso-cd--here))
+(load (expand-file-name "../lisp/nso-stack-paths.el"
+                        (file-name-directory (or load-file-name buffer-file-name
+                                                 default-directory))) nil t)
 (add-to-list 'load-path nso-cd--out)
 
 (setq byte-compile-dest-file-function

@@ -16,10 +16,10 @@
 (defun nso-p2--sib (name) (expand-file-name (concat "../../" name) nso-p2--here))
 (defun nso-p2--own (name) (expand-file-name (concat "../" name) nso-p2--here))
 
-(add-to-list 'load-path (nso-p2--own "lisp"))
+(load (expand-file-name "../lisp/nso-stack-paths.el"
+                        (file-name-directory (or load-file-name buffer-file-name
+                                                 default-directory))) nil t)
 (add-to-list 'load-path (nso-p2--own "build/elc"))
-(dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
-  (add-to-list 'load-path (nso-p2--sib d)))
 
 (require 'nso-choice)
 (require 'nso-probe)

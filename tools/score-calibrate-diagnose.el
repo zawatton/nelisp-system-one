@@ -45,6 +45,9 @@
 (add-to-list 'load-path (expand-file-name "../lisp" nso-dg--here))
 (add-to-list 'load-path (expand-file-name "../build/elc" nso-dg--here))
 
+(load (expand-file-name "../lisp/nso-stack-paths.el"
+                        (file-name-directory (or load-file-name buffer-file-name
+                                                 default-directory))) nil t)
 (require 'nso-score)
 (require 'nso-probe)
 (require 'nso-stub)

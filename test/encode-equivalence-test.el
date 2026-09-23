@@ -21,9 +21,9 @@
 (defvar nso-eq--here
   (file-name-directory (or load-file-name buffer-file-name default-directory)))
 
-(dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
-  (add-to-list 'load-path (expand-file-name (concat "../../" d) nso-eq--here)))
-(add-to-list 'load-path (expand-file-name "../lisp" nso-eq--here))
+(load (expand-file-name "../lisp/nso-stack-paths.el"
+                        (file-name-directory (or load-file-name buffer-file-name
+                                                 default-directory))) nil t)
 
 (load (expand-file-name "nso-test-helper.el" nso-eq--here))
 

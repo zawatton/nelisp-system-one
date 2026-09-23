@@ -20,8 +20,9 @@
 (defun nso-probe--sib (name)
   (expand-file-name (concat "../../" name) nso-probe--here))
 
-(dolist (d '("nelisp-llm/lisp" "nelisp-photon/lisp" "nelisp-gpu/lisp"))
-  (add-to-list 'load-path (nso-probe--sib d)))
+(load (expand-file-name "../lisp/nso-stack-paths.el"
+                        (file-name-directory (or load-file-name buffer-file-name
+                                                 default-directory))) nil t)
 
 (require 'photon-tensor)
 (require 'nl-llm-weights)
